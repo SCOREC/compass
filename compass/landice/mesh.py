@@ -10,6 +10,9 @@ from mpas_tools.logging import check_call
 from mpas_tools.mesh.conversion import convert, cull
 from mpas_tools.mesh.creation import build_planar_mesh
 from netCDF4 import Dataset
+from scipy import ndimage
+
+import compass.landice.marching_cubes_2d as mc
 
 
 def gridded_flood_fill(field, iStart=None, jStart=None):
@@ -317,6 +320,52 @@ def set_cell_width(self, section_name, thk, bed=None, vx=None, vy=None,
     return cell_width
 
 
+def mesh_gl(thk, topg, x, y):
+    class CartesianGridInterpolator:
+        def __init__(self, points, values, method='linear'):
+            self.limits = np.array([[min(x), max(x)] for x in points])
+            self.values = np.asarray(values, dtype=float)
+            self.order = {'linear': 1, 'cubic': 3, 'quintic': 5}[method]
+
+        def __call__(self, x, y):
+            """
+            `xi` here is an array-like (an array or a list) of points.
+
+            Each "point" is an ndim-dimensional array_like, representing
+            the coordinates of a point in ndim-dimensional space.
+            """
+            # transpose the xi array into the ``map_coordinates`` convention
+            # which takes coordinates of a point along columns of a 2D array.
+            xi = np.asarray([[x, y]]).T
+
+            # convert from data coordinates to pixel coordinates
+            ns = self.values.shape
+            coords = [(n - 1) * (val - lo) / (hi - lo)
+                      for val, n, (lo, hi) in zip(xi, ns, self.limits)]
+
+            # interpolate
+            return ndimage.map_coordinates(self.values, coords,
+                                           order=self.order,
+                                           cval=np.nan)  # fill_value
+
+    print("mesh_gl start\n")
+    tic = time.time()
+
+    dx = x[1] - x[0]  # assumed constant and equal in x and y
+
+    rho_i = 910.0
+    rho_w = 1028.0
+    phi = rho_i * thk + rho_w * topg  # runtime overflow warning?
+    cgi = CartesianGridInterpolator((x, y), phi, method='linear')
+
+    edges = mc.marching_cubes_2d(cgi, min(x), max(x), min(y), max(y), dx)
+    with open("example.svg", "w") as file:
+        mc.make_svg(file, edges, cgi, min(x), max(x), min(y), max(y), dx)
+
+    toc = time.time()
+    print("mesh_gl end\n" + str(toc - tic))
+
+
 def get_dist_to_edge_and_gl(self, thk, topg, x, y,
                             section_name, window_size=None):
     """
@@ -533,6 +582,8 @@ def build_cell_width(self, section_name, gridded_dataset,
     thk[flood_mask == 0] = 0.0
     vx[flood_mask == 0] = 0.0
     vy[flood_mask == 0] = 0.0
+
+    mesh_gl(thk, topg, x1, y1)
 
     # Calculate distance from each grid point to ice edge
     # and grounding line, for use in cell spacing functions.
