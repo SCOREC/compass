@@ -355,12 +355,42 @@ def mesh_gl(thk, topg, x, y):
 
     rho_i = 910.0
     rho_w = 1028.0
-    phi = rho_i * thk + rho_w * topg  # runtime overflow warning?
+    # Using the grounding line level set
+    # expression 'phi = rho_i * thk + rho_w * topg'
+    # results in a runtime overflow warning as 'topg'
+    # has values around 1e37 near two of the domain
+    # corners (minx,miny) and (maxx,miny).
+    # In those corners the level set distance will be set to
+    # max distance = max(maxx, maxy)
+    (xSize, ySize) = thk.shape
+    max_distance = max(max(x), max(y))
+    phi = np.zeros((xSize, ySize))
+    # FIXME this isn't very pythonish
+    for i in range(xSize):
+        for j in range(ySize):
+            if thk[i][j] <= 0:
+                phi[i][j] = max_distance
+            else:
+                phi[i][j] = rho_i * thk[i][j] + rho_w * topg[i][j]
     cgi = CartesianGridInterpolator((x, y), phi, method='linear')
 
     edges = mc.marching_cubes_2d(cgi, min(x), max(x), min(y), max(y), dx)
+    edgePointsX = []
+    edgePointsY = []
+    for e in edges:
+        edgePointsX.append(e.v1.x)
+        edgePointsY.append(e.v1.y)
+        edgePointsX.append(e.v2.x)
+        edgePointsY.append(e.v2.y)
+
+    # FIXME brackets are being being added around coordinates
+    # FIXME (cont.) that make the svg invalid
+    # FIXME is the scale factor needed
     with open("example.svg", "w") as file:
-        mc.make_svg(file, edges, cgi, min(x), max(x), min(y), max(y), dx)
+        mc.make_svg(file, edges, cgi,
+                    min(edgePointsX), max(edgePointsX),
+                    min(edgePointsY), max(edgePointsY),
+                    dx)
 
     toc = time.time()
     print("mesh_gl end\n" + str(toc - tic))
