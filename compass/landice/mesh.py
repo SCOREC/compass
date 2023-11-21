@@ -413,6 +413,11 @@ def mesh_gl(thk, topg, x, y):
     print("mesh_gl start\n")
     tic = time.time()
 
+    np.save("thk", thk)
+    np.save("topg", topg)
+    np.save("x", x)
+    np.save("y", y)
+
     dx = x[1] - x[0]  # assumed constant and equal in x and y
 
     rho_i = 910.0
