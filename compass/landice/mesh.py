@@ -469,6 +469,12 @@ def mesh_gl(thk, topg, x, y):
     toc = time.time()
     print("mesh_gl done: {:.2f} seconds\n".format(toc - tic))
 
+    max_contour = max(contours, key=len)
+    max_contour_len = len(max_contour)
+    print("max sized contour lenth {}\n".format(max_contour_len))
+
+    return max_contour
+
 
 def get_dist_to_edge_and_gl(self, thk, topg, x, y,
                             section_name, window_size=None):
