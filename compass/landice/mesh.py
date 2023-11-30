@@ -1,6 +1,7 @@
 import time
 
 import jigsawpy
+import meshio
 import mpas_tools.io
 import numpy as np
 import xarray
@@ -10,9 +11,8 @@ from mpas_tools.logging import check_call
 from mpas_tools.mesh.conversion import convert, cull
 from mpas_tools.mesh.creation import build_planar_mesh
 from netCDF4 import Dataset
-from scipy import ndimage
-
-import compass.landice.marching_cubes_2d as mc
+from scipy.interpolate import interpn
+from skimage.measure import find_contours
 
 
 def gridded_flood_fill(field, iStart=None, jStart=None):
@@ -320,43 +320,51 @@ def set_cell_width(self, section_name, thk, bed=None, vx=None, vy=None,
     return cell_width
 
 
+def writeContoursToVtk(contours, file):
+    """Writes a VTK mesh file from the given contours
+       (chains of vertices that form edges)."""
+    points = []
+    line_indices = []
+    first_point = 0
+    contour_id = 0
+    contour_ids = []
+    for contour_pts in contours:
+        print("len(contour_pts) {} closed contour {}",
+              len(contour_pts), (contour_pts[-1] == contour_pts[0]).all())
+        for i in range(len(contour_pts) - 1):
+            points.append(contour_pts[i])
+            line_indices.append([first_point + i, first_point + i + 1])
+            contour_ids.append([contour_id])
+        points.append(contour_pts[-1])
+        first_point = len(points)
+        contour_id = contour_id + 1
+
+    cells = [("line", line_indices)]
+    cell_data = {"contour_id": [contour_ids]}
+
+    mesh = meshio.Mesh(points, cells, cell_data=cell_data)
+
+    mesh.write(file)
+
+
 def mesh_gl(thk, topg, x, y):
-    class CartesianGridInterpolator:
-        def __init__(self, points, values, method='linear'):
-            self.limits = np.array([[min(x), max(x)] for x in points])
-            self.values = np.asarray(values, dtype=float)
-            self.order = {'linear': 1, 'cubic': 3, 'quintic': 5}[method]
+    class Interp:
+        def __init__(self, points, values, fill, method='linear'):
+            self.points = points
+            self.values = values
+            self.method = method
+            self.fill = fill
 
         def __call__(self, x, y):
-            """
-            `xi` here is an array-like (an array or a list) of points.
-
-            Each "point" is an ndim-dimensional array_like, representing
-            the coordinates of a point in ndim-dimensional space.
-            """
-            # transpose the xi array into the ``map_coordinates`` convention
-            # which takes coordinates of a point along columns of a 2D array.
-            xi = np.asarray([[x, y]]).T
-
-            # convert from data coordinates to pixel coordinates
-            ns = self.values.shape
-            coords = [(n - 1) * (val - lo) / (hi - lo)
-                      for val, n, (lo, hi) in zip(xi, ns, self.limits)]
-
-            # interpolate
-            return ndimage.map_coordinates(self.values, coords,
-                                           order=self.order,
-                                           cval=np.nan)  # fill_value
+            return interpn(self.points, self.values, (x, y),
+                           bounds_error=False, fill_value=self.fill)
 
     print("mesh_gl start\n")
+    assert (thk.shape == (len(y), len(x)))
     tic = time.time()
 
-    np.save("thk", thk)
-    np.save("topg", topg)
-    np.save("x", x)
-    np.save("y", y)
-
-    dx = x[1] - x[0]  # assumed constant and equal in x and y
+    cell_size = x[1] - x[0]  # assumed constant and equal in x and y
+    half_cell_size = cell_size / 2
 
     rho_i = 910.0
     rho_w = 1028.0
@@ -367,38 +375,34 @@ def mesh_gl(thk, topg, x, y):
     # corners (minx,miny) and (maxx,miny).
     # In those corners the level set distance will be set to
     # max distance = max(maxx, maxy)
-    (xSize, ySize) = thk.shape
+    (rows, cols) = thk.shape
     max_distance = max(max(x), max(y))
-    phi = np.zeros((xSize, ySize))
-    # FIXME this isn't very pythonish
-    for i in range(xSize):
-        for j in range(ySize):
-            if thk[i][j] <= 0:
+    phi = np.zeros((rows, cols))
+    for i in range(rows):
+        for j in range(cols):
+            if not np.isclose(thk[i][j], 0) and thk[i][j] < 0:
                 phi[i][j] = max_distance
             else:
                 phi[i][j] = rho_i * thk[i][j] + rho_w * topg[i][j]
-    cgi = CartesianGridInterpolator((x, y), phi, method='linear')
 
-    edges = mc.marching_cubes_2d(cgi, min(x), max(x), min(y), max(y), dx)
-    edgePointsX = []
-    edgePointsY = []
-    for e in edges:
-        edgePointsX.append(e.v1.x)
-        edgePointsY.append(e.v1.y)
-        edgePointsX.append(e.v2.x)
-        edgePointsY.append(e.v2.y)
+    min_x, max_x = np.min(x), np.max(x)
+    min_y, max_y = np.min(y), np.max(y)
+    mid_pt_x, mid_pt_y = np.mgrid[min_x + half_cell_size:max_x:cell_size,
+                                  min_y + half_cell_size:max_y:cell_size]
 
-    # FIXME brackets are being being added around coordinates
-    # FIXME (cont.) that make the svg invalid
-    # FIXME is the scale factor needed
-    with open("example.svg", "w") as file:
-        mc.make_svg(file, edges, cgi,
-                    min(edgePointsX), max(edgePointsX),
-                    min(edgePointsY), max(edgePointsY),
-                    dx)
+    cgi = Interp((x, y), phi.T, fill=max_distance, method='linear')
+    phi_mid_pt = cgi(mid_pt_x, mid_pt_y)
+    phi_mid_pt_grid = np.reshape(phi_mid_pt, mid_pt_x.shape)
+
+    ms_begin = time.time()
+    contours = find_contours(phi_mid_pt_grid, 0.0)
+    ms_end = time.time()
+    print("find_contours done: {:.2f} seconds".format(ms_end - ms_begin))
+
+    writeContoursToVtk(contours, "gisContours.vtk")
 
     toc = time.time()
-    print("mesh_gl end\n" + str(toc - tic))
+    print("mesh_gl done: {:.2f} seconds\n".format(toc - tic))
 
 
 def get_dist_to_edge_and_gl(self, thk, topg, x, y,
