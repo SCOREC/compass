@@ -693,7 +693,19 @@ def build_cell_width(self, section_name, gridded_dataset,
     vx[flood_mask == 0] = 0.0
     vy[flood_mask == 0] = 0.0
 
-    mesh_gl(thk, topg, x1, y1)
+    gl_contour = mesh_gl(thk, topg, x1, y1)
+
+    # append contour edges to jigsaw geom lists
+    first_point = len(geom_points)
+    points = np.zeros(len(gl_contour))
+    line_points = np.zeros(len(gl_contour) - 1)
+    for i in range(len(gl_contour) - 1):
+        points[i] = (gl_contour[i], 0)
+        line_points[i] = ([first_point + i, first_point + i + 1], 0)
+    points[-1] = (gl_contour[-1], 0)
+
+    geom_points = np.append(geom_points, points)
+    geom_edges = np.append(geom_edges, line_points)
 
     # Calculate distance from each grid point to ice edge
     # and grounding line, for use in cell spacing functions.
