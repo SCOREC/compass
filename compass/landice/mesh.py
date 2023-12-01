@@ -194,6 +194,24 @@ def set_rectangular_geom_points_and_edges(xmin, xmax, ymin, ymax):
     return geom_points, geom_edges
 
 
+def append_gl_geom_points_and_edges(gl_contour, geom_points, geom_edges):
+    # append contour edges to jigsaw geom lists
+    first_point = len(geom_points)
+    points = np.zeros(len(gl_contour),
+                      dtype=jigsawpy.jigsaw_msh_t.VERT2_t)
+    line_points = np.zeros(len(gl_contour) - 1,
+                           dtype=jigsawpy.jigsaw_msh_t.EDGE2_t)
+    for i in range(len(gl_contour) - 1):
+        points[i] = (gl_contour[i], 0)
+        line_points[i] = ([first_point + i, first_point + i + 1], 0)
+    points[-1] = (gl_contour[-1], 0)
+
+    gl_points = np.append(geom_points, points)
+    gl_edges = np.append(geom_edges, line_points)
+
+    return gl_points, gl_edges
+
+
 def set_cell_width(self, section_name, thk, bed=None, vx=None, vy=None,
                    dist_to_edge=None, dist_to_grounding_line=None,
                    flood_fill_iStart=None, flood_fill_jStart=None):
@@ -695,17 +713,9 @@ def build_cell_width(self, section_name, gridded_dataset,
 
     gl_contour = mesh_gl(thk, topg, x1, y1)
 
-    # append contour edges to jigsaw geom lists
-    first_point = len(geom_points)
-    points = np.zeros(len(gl_contour))
-    line_points = np.zeros(len(gl_contour) - 1)
-    for i in range(len(gl_contour) - 1):
-        points[i] = (gl_contour[i], 0)
-        line_points[i] = ([first_point + i, first_point + i + 1], 0)
-    points[-1] = (gl_contour[-1], 0)
-
-    geom_points = np.append(geom_points, points)
-    geom_edges = np.append(geom_edges, line_points)
+    gl_points, gl_edges = append_gl_geom_points_and_edges(gl_contour,
+                                                          geom_points,
+                                                          geom_edges)
 
     # Calculate distance from each grid point to ice edge
     # and grounding line, for use in cell spacing functions.
@@ -722,7 +732,7 @@ def build_cell_width(self, section_name, gridded_dataset,
                                 flood_fill_jStart=flood_fill_start[1])
 
     return (cell_width.astype('float64'), x1.astype('float64'),
-            y1.astype('float64'), geom_points, geom_edges, flood_mask)
+            y1.astype('float64'), gl_points, gl_edges, flood_mask)
 
 
 def build_mali_mesh(self, cell_width, x1, y1, geom_points,
