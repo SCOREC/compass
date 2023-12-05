@@ -491,7 +491,10 @@ def mesh_gl(thk, topg, x, y):
     max_contour_len = len(max_contour)
     print("max sized contour lenth {}\n".format(max_contour_len))
 
-    return max_contour
+    # transform the contour points back to the original coordinate system
+    transformed_pts = [(pt * cell_size) + (min_x, min_y) for pt in max_contour]
+
+    return transformed_pts
 
 
 def get_dist_to_edge_and_gl(self, thk, topg, x, y,
