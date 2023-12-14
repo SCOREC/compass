@@ -412,8 +412,6 @@ def writeContoursToVtk(contours, file):
     contour_id = 0
     contour_ids = []
     for contour_pts in contours:
-        print("len(contour_pts) {} closed contour {}",
-              len(contour_pts), (contour_pts[-1] == contour_pts[0]).all())
         for i in range(len(contour_pts) - 1):
             points.append(contour_pts[i])
             line_indices.append([first_point + i, first_point + i + 1])
@@ -428,6 +426,35 @@ def writeContoursToVtk(contours, file):
     mesh = meshio.Mesh(points, cells, cell_data=cell_data)
 
     mesh.write(file)
+
+
+def collapse_small_edges(contour, small, debug=True):
+    print("collapse_small_edges start\n")
+    tic = time.time()
+    collapsed = []
+    current = 0
+    next = 1
+    collapsed.append(contour[current])
+    last_idx = len(contour) - 1
+    while current < last_idx and next <= last_idx:
+        pt = contour[current]
+        next_pt = contour[next]
+        dist = np.linalg.norm(pt - next_pt)
+        if (dist <= small and debug):
+            print("pt[i] {} {} pt[i+1] {} {}".
+                  format(pt[0], pt[1], next_pt[0], next_pt[1]))
+            print("points are {} apart, which is less than {}".
+                  format(dist, small))
+            next += 1  # advance 'next' for the next evaluation
+        else:
+            collapsed.append(next_pt)
+            current = next
+            next += 1
+    toc = time.time()
+    print("collapse_small_edges done: {:.2f} seconds\n".format(toc - tic))
+    print("len(contour) {} len(collapsed) {}".
+          format(len(contour), len(collapsed)))
+    return collapsed
 
 
 def mesh_gl(thk, topg, x, y):
@@ -716,7 +743,9 @@ def build_cell_width(self, section_name, gridded_dataset,
 
     gl_contour = mesh_gl(thk, topg, x1, y1)
 
-    gl_points, gl_edges = append_gl_geom_points_and_edges(gl_contour,
+    gl_coarsened_contour = collapse_small_edges(gl_contour, small=1)
+
+    gl_points, gl_edges = append_gl_geom_points_and_edges(gl_coarsened_contour,
                                                           geom_points,
                                                           geom_edges)
 
