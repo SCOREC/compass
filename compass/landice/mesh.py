@@ -195,21 +195,24 @@ def set_rectangular_geom_points_and_edges(xmin, xmax, ymin, ymax):
 
 
 def append_gl_geom_points_and_edges(gl_contour, geom_points, geom_edges):
+    assert (gl_contour[0] == gl_contour[-1]).all()
     # append contour edges to jigsaw geom lists
-    first_point = len(geom_points)
-    points = np.zeros(len(gl_contour),
+    numPoints = len(gl_contour) - 1
+    numEdges = numPoints
+    first_point = 0
+    points = np.zeros(numPoints,
                       dtype=jigsawpy.jigsaw_msh_t.VERT2_t)
-    line_points = np.zeros(len(gl_contour) - 1,
-                           dtype=jigsawpy.jigsaw_msh_t.EDGE2_t)
-    for i in range(len(gl_contour) - 1):
+    edges = np.zeros(numEdges,
+                     dtype=jigsawpy.jigsaw_msh_t.EDGE2_t)
+    lastPointIdx = numPoints - 1
+    for i in range(numPoints):
         points[i] = (gl_contour[i], 0)
-        line_points[i] = ([first_point + i, first_point + i + 1], 0)
-    points[-1] = (gl_contour[-1], 0)
+        if i != lastPointIdx:
+            edges[i] = ([first_point + i, first_point + i + 1], 0)
+        else:
+            edges[i] = ([first_point + i, first_point], 0)
 
-    gl_points = np.append(geom_points, points)
-    gl_edges = np.append(geom_edges, line_points)
-
-    return gl_points, gl_edges
+    return points, edges
 
 
 def set_cell_width(self, section_name, thk, bed=None, vx=None, vy=None,
