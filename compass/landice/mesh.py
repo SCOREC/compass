@@ -406,27 +406,21 @@ def set_cell_width(self, section_name, thk, bed=None, vx=None, vy=None,
     return cell_width
 
 
-def writeContoursToVtk(contours, file):
-    """Writes a VTK mesh file from the given contours
-       (chains of vertices that form edges)."""
+def writeContoursToVtk(contour, file):
+    """Writes a VTK mesh file from the given contour
+       (chain of vertices that form edges)."""
     points = []
     line_indices = []
     first_point = 0
-    contour_id = 0
-    contour_ids = []
-    for contour_pts in contours:
-        for i in range(len(contour_pts) - 1):
-            points.append(contour_pts[i])
-            line_indices.append([first_point + i, first_point + i + 1])
-            contour_ids.append([contour_id])
-        points.append(contour_pts[-1])
-        first_point = len(points)
-        contour_id = contour_id + 1
+    for i in range(len(contour) - 1):
+        points.append(contour[i])
+        line_indices.append([first_point + i, first_point + i + 1])
+    points.append(contour[-1])
+    first_point = len(points)
 
     cells = [("line", line_indices)]
-    cell_data = {"contour_id": [contour_ids]}
 
-    mesh = meshio.Mesh(points, cells, cell_data=cell_data)
+    mesh = meshio.Mesh(points, cells)
 
     mesh.write(file)
 
@@ -512,8 +506,6 @@ def mesh_gl(thk, topg, x, y):
     ms_end = time.time()
     print("find_contours done: {:.2f} seconds".format(ms_end - ms_begin))
 
-    writeContoursToVtk(contours, "gisContours.vtk")
-
     toc = time.time()
     print("mesh_gl done: {:.2f} seconds\n".format(toc - tic))
 
@@ -523,6 +515,8 @@ def mesh_gl(thk, topg, x, y):
 
     # transform the contour points back to the original coordinate system
     transformed_pts = [(pt * cell_size) + (min_x, min_y) for pt in max_contour]
+
+    writeContoursToVtk(transformed_pts, "gisContours.vtk")
 
     return transformed_pts
 
