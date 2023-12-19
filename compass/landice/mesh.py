@@ -195,24 +195,72 @@ def set_rectangular_geom_points_and_edges(xmin, xmax, ymin, ymax):
 
 
 def append_gl_geom_points_and_edges(gl_contour, geom_points, geom_edges):
+    """
+    Combine the Jigsaw lists of points and edges that define the geometric
+    model bounding polygon (``geom_points`` and ``geom_edges``, respectively)
+    with the list of points that define the grounding line contour
+    (``gl_contour``).
+
+    Parameters
+    ----------
+    gl_contour : array
+        array of points such that (1) edges are defined by adjacent
+        pairs of points starting from the first (i.e., ``edge 0 =
+        (gl_contour[0],gl_contour[1])``) and (2) the first and last points
+        are the same so that a closed loop is formed.
+
+    geom_points : array, dtype=jigsawpy.jigsaw_msh_t.VERT2_t
+        points defining the bounding polygon of the domain
+
+    geom_edges : array, dtype=jigsawpy.jigsaw_msh_t.EDGE2_t
+        edges defining the bounding polygon of the domain
+
+    Returns
+    -------
+    points : numpy.array, dtype=jigsawpy.jigsaw_msh_t.VERT2_t
+        contains the bounding points from ``geom_points`` followed by the
+        points from ``gl_contour``
+
+    edges : numpy.array, dtype=jigsawpy.jigsaw_msh_t.EDGE2_t
+        contains the edges from ``geom_edges`` followed by ``gl_contour`` using
+        point indices from ``points``
+
+    boundary : numpy.array, dtype=jigsaw_msh_t.BOUND_t
+        indicates which ``edges`` form the boundary of the domain
+    """
+
+    # assert that there is a loop
     assert (gl_contour[0] == gl_contour[-1]).all()
-    # append contour edges to jigsaw geom lists
-    numPoints = len(gl_contour) - 1
-    numEdges = numPoints
-    first_point = 0
+    first_gl_point = len(geom_points)
+    numPoints = len(gl_contour) - 1 + first_gl_point
+    numEdges = numPoints + len(geom_edges)
     points = np.zeros(numPoints,
                       dtype=jigsawpy.jigsaw_msh_t.VERT2_t)
     edges = np.zeros(numEdges,
                      dtype=jigsawpy.jigsaw_msh_t.EDGE2_t)
-    lastPointIdx = numPoints - 1
-    for i in range(numPoints):
-        points[i] = (gl_contour[i], 0)
-        if i != lastPointIdx:
-            edges[i] = ([first_point + i, first_point + i + 1], 0)
-        else:
-            edges[i] = ([first_point + i, first_point], 0)
 
-    return points, edges
+    for i in range(len(geom_edges)):
+        edges[i] = geom_edges[i]
+
+    for i in range(first_gl_point):
+        points[i] = geom_points[i]
+
+    for i in range(first_gl_point, numPoints - 1):
+        points[i] = (gl_contour[i - first_gl_point], 0)
+        edges[i] = ([first_gl_point + i, first_gl_point + i + 1], 0)
+
+    # close the loop
+    edges[numPoints - 1] = ([first_gl_point + i, first_gl_point], 0)
+
+    # fill the boundary data
+    ent_id = 1
+    ent_type = jigsawpy.jigsaw_def_t.JIGSAW_EDGE2_TAG
+    boundary = np.zeros(len(geom_edges), dtype=jigsawpy.jigsaw_msh_t.BOUND_t)
+    for i in range(len(geom_edges)):
+        boundary[i] = np.array([(ent_id, i, ent_type)],
+                               dtype=jigsawpy.jigsaw_msh_t.BOUND_t)
+
+    return points, edges, boundary
 
 
 def set_cell_width(self, section_name, thk, bed=None, vx=None, vy=None,
@@ -742,9 +790,9 @@ def build_cell_width(self, section_name, gridded_dataset,
 
     gl_coarsened_contour = collapse_small_edges(gl_contour, small=1)
 
-    gl_points, gl_edges = append_gl_geom_points_and_edges(gl_coarsened_contour,
-                                                          geom_points,
-                                                          geom_edges)
+    all_points, gl_edges, bound_edges = \
+        append_gl_geom_points_and_edges(gl_coarsened_contour,
+                                        geom_points, geom_edges)
 
     # Calculate distance from each grid point to ice edge
     # and grounding line, for use in cell spacing functions.
@@ -761,11 +809,11 @@ def build_cell_width(self, section_name, gridded_dataset,
                                 flood_fill_jStart=flood_fill_start[1])
 
     return (cell_width.astype('float64'), x1.astype('float64'),
-            y1.astype('float64'), gl_points, gl_edges, flood_mask)
+            y1.astype('float64'), all_points, geom_edges, gl_edges, flood_mask)
 
 
 def build_mali_mesh(self, cell_width, x1, y1, geom_points,
-                    geom_edges, mesh_name, section_name,
+                    geom_edges, geom_edges_interior, mesh_name, section_name,
                     gridded_dataset, projection, geojson_file=None,
                     cores=1):
     """
@@ -794,6 +842,12 @@ def build_mali_mesh(self, cell_width, x1, y1, geom_points,
 
     geom_edges : jigsawpy.jigsaw_msh_t.EDGE2_t
         xy edge coordinates between nodes to pass to ``build_planar_mesh()``
+        that define the bounding polygon of the domain
+
+    geom_edges_interior : jigsawpy.jigsaw_msh_t.EDGE2_t
+        xy edge coordinates between nodes to pass to ``build_planar_mesh()``
+        that define geometric features within the bounds defined by
+        ``geom_edges``
 
     mesh_name : str
         Filename to be used for final MALI NetCDF mesh file.
@@ -828,7 +882,7 @@ def build_mali_mesh(self, cell_width, x1, y1, geom_points,
 
     logger.info('calling build_planar_mesh')
     build_planar_mesh(cell_width, x1, y1, geom_points,
-                      geom_edges, logger=logger)
+                      geom_edges, geom_edges_interior, logger=logger)
     dsMesh = xarray.open_dataset('base_mesh.nc')
     logger.info('culling mesh')
     dsMesh = cull(dsMesh, logger=logger)
