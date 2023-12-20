@@ -190,12 +190,11 @@ def append_gl_geom_points_and_edges(gl_contour, geom_points, geom_edges):
     edges[numPoints - 1] = ([first_gl_point + i, first_gl_point], 0)
 
     # fill the boundary data
-    ent_id = 1
+    ent_id = +1
     ent_type = jigsawpy.jigsaw_def_t.JIGSAW_EDGE2_TAG
     boundary = np.zeros(len(geom_edges), dtype=jigsawpy.jigsaw_msh_t.BOUND_t)
     for i in range(len(geom_edges)):
-        boundary[i] = np.array([(ent_id, i, ent_type)],
-                               dtype=jigsawpy.jigsaw_msh_t.BOUND_t)
+        boundary[i] = np.array([(ent_id, i, ent_type)])
 
     return points, edges, boundary
 
