@@ -231,6 +231,7 @@ def append_gl_geom_points_and_edges(gl_contour, geom_points, geom_edges):
 
     # assert that there is a loop
     assert (gl_contour[0] == gl_contour[-1]).all()
+
     first_gl_point = len(geom_points)
     numPoints = len(gl_contour) - 1 + first_gl_point
     numEdges = numPoints + len(geom_edges)
@@ -249,17 +250,21 @@ def append_gl_geom_points_and_edges(gl_contour, geom_points, geom_edges):
         points[i] = (gl_contour[i - first_gl_point], 0)
         edges[i] = ([first_gl_point + i, first_gl_point + i + 1], 0)
 
+    # last point
+    # points[numPoints - 1] = # FIXME
     # close the loop
-    edges[numPoints - 1] = ([first_gl_point + i, first_gl_point], 0)
+    edges[numPoints - 1] = ([numPoints, first_gl_point], 0)  # FIXME
 
     # fill the boundary data
+    geom = jigsawpy.jigsaw_msh_t()
     ent_id = +1
     ent_type = jigsawpy.jigsaw_def_t.JIGSAW_EDGE2_TAG
-    boundary = np.zeros(len(geom_edges), dtype=jigsawpy.jigsaw_msh_t.BOUND_t)
+    boundary = []
     for i in range(len(geom_edges)):
-        boundary[i] = np.array([(ent_id, i, ent_type)])
+        boundary.append((ent_id, i, ent_type))
+    bdry = np.array(boundary, dtype=geom.BOUND_t)
 
-    return points, edges, boundary
+    return points, edges, bdry
 
 
 def set_cell_width(self, section_name, thk, bed=None, vx=None, vy=None,
@@ -789,7 +794,7 @@ def build_cell_width(self, section_name, gridded_dataset,
 
     gl_coarsened_contour = collapse_small_edges(gl_contour, small=1)
 
-    all_points, gl_edges, bound_edges = \
+    all_points, all_edges, bound_edges = \
         append_gl_geom_points_and_edges(gl_coarsened_contour,
                                         geom_points, geom_edges)
 
@@ -807,12 +812,14 @@ def build_cell_width(self, section_name, gridded_dataset,
                                 flood_fill_iStart=flood_fill_start[0],
                                 flood_fill_jStart=flood_fill_start[1])
 
-    return (cell_width.astype('float64'), x1.astype('float64'),
-            y1.astype('float64'), all_points, geom_edges, gl_edges, flood_mask)
+    return (cell_width.astype('float64'),
+            x1.astype('float64'), y1.astype('float64'),
+            all_points, all_edges, bound_edges,
+            flood_mask)
 
 
 def build_mali_mesh(self, cell_width, x1, y1, geom_points,
-                    geom_edges, geom_edges_interior, mesh_name, section_name,
+                    geom_edges, geom_bounds, mesh_name, section_name,
                     gridded_dataset, projection, geojson_file=None,
                     cores=1):
     """
@@ -841,10 +848,10 @@ def build_mali_mesh(self, cell_width, x1, y1, geom_points,
 
     geom_edges : jigsawpy.jigsaw_msh_t.EDGE2_t
         xy edge coordinates between nodes to pass to ``build_planar_mesh()``
-        that define the bounding polygon of the domain
+        that define geometric model edges
 
-    geom_edges_interior : jigsawpy.jigsaw_msh_t.EDGE2_t
-        xy edge coordinates between nodes to pass to ``build_planar_mesh()``
+    geom_bounds : jigsawpy.jigsaw_msh_t.BOUND_t
+        list of edges to pass to ``build_planar_mesh()``
         that define geometric features within the bounds defined by
         ``geom_edges``
 
@@ -881,7 +888,7 @@ def build_mali_mesh(self, cell_width, x1, y1, geom_points,
 
     logger.info('calling build_planar_mesh')
     build_planar_mesh(cell_width, x1, y1, geom_points,
-                      geom_edges, geom_edges_interior, logger=logger)
+                      geom_edges, geom_bounds, logger=logger)
     dsMesh = xarray.open_dataset('base_mesh.nc')
     logger.info('culling mesh')
     dsMesh = cull(dsMesh, logger=logger)
