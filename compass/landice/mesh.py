@@ -140,11 +140,13 @@ def append_gl_geom_points_and_edges(gl_contour, geom_points, geom_edges):
 
     Parameters
     ----------
-    gl_contour : array
-        array of points such that (1) edges are defined by adjacent
-        pairs of points starting from the first (i.e., ``edge 0 =
-        (gl_contour[0],gl_contour[1])``) and (2) the first and last points
-        are the same so that a closed loop is formed.
+    gl_contour : np.array
+        array of tuples defining (x,y) coordinates of geometric model vertices
+        points such that (1) edges are defined by adjacent pairs of points
+        starting from the first (i.e.,
+        ``edge 0 = (gl_contour[0],gl_contour[1])``)
+        and (2) the first and last points are the same so that a closed loop
+        is formed.
 
     geom_points : array, dtype=jigsawpy.jigsaw_msh_t.VERT2_t
         points defining the bounding polygon of the domain
@@ -169,39 +171,27 @@ def append_gl_geom_points_and_edges(gl_contour, geom_points, geom_edges):
     # assert that there is a loop
     assert (gl_contour[0] == gl_contour[-1]).all()
 
-    first_gl_point = len(geom_points)
-    numPoints = len(gl_contour) - 1 + first_gl_point
-    numEdges = numPoints + len(geom_edges)
-    points = np.zeros(numPoints,
-                      dtype=jigsawpy.jigsaw_msh_t.VERT2_t)
-    edges = np.zeros(numEdges,
-                     dtype=jigsawpy.jigsaw_msh_t.EDGE2_t)
+    vtx_tag = +1
+    gl_points = [([pt[0], pt[1]], vtx_tag) for pt in gl_contour[:-1]]
+    gl_points_ar = np.array(gl_points, dtype=jigsawpy.jigsaw_msh_t.VERT2_t)
+    points_ar = np.concatenate((geom_points, gl_points_ar),
+                               dtype=jigsawpy.jigsaw_msh_t.VERT2_t)
 
-    for i in range(len(geom_edges)):
-        edges[i] = geom_edges[i]
-
-    for i in range(first_gl_point):
-        points[i] = geom_points[i]
-
-    for i in range(first_gl_point, numPoints - 1):
-        points[i] = (gl_contour[i - first_gl_point], 0)
-        edges[i] = ([first_gl_point + i, first_gl_point + i + 1], 0)
-
-    # last point
-    # points[numPoints - 1] = # FIXME
-    # close the loop
-    edges[numPoints - 1] = ([numPoints, first_gl_point], 0)  # FIXME
+    edge_tag = +1
+    indices = [i for i in range(len(gl_contour[:-1]))]
+    gl_edges = list(zip(indices[:-1], indices[1:]))
+    gl_edges_tag = [([pt[0], pt[1]], edge_tag) for pt in gl_edges]
+    gl_edges_ar = np.array(gl_edges_tag, dtype=jigsawpy.jigsaw_msh_t.EDGE2_t)
+    edges_ar = np.concatenate((geom_edges, gl_edges_ar),
+                              dtype=jigsawpy.jigsaw_msh_t.EDGE2_t)
 
     # fill the boundary data
-    geom = jigsawpy.jigsaw_msh_t()
     ent_id = +1
     ent_type = jigsawpy.jigsaw_def_t.JIGSAW_EDGE2_TAG
-    boundary = []
-    for i in range(len(geom_edges)):
-        boundary.append((ent_id, i, ent_type))
-    bdry = np.array(boundary, dtype=geom.BOUND_t)
+    boundary = [(ent_id, i, ent_type) for i in range(len(geom_edges))]
+    boundary_ar = np.array(boundary, dtype=jigsawpy.jigsaw_msh_t.BOUND_t)
 
-    return points, edges, bdry
+    return points_ar, edges_ar, boundary_ar
 
 
 def set_cell_width(self, section_name, thk, bed=None, vx=None, vy=None,
