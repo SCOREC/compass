@@ -54,14 +54,14 @@ class Mesh(Step):
         logger.info('calling build_cell_width')
         grid_data_name = 'greenland_2km_2020_04_20.epsg3413.nc'
         cell_width, x1, y1, geom_points, geom_edges, \
-            geom_edges_interior, floodMask = \
+            geom_bounds, floodMask = \
             build_cell_width(self, section_name=section_name,
                              gridded_dataset=grid_data_name,
                              flood_fill_start=[100, 700])
 
         build_mali_mesh(
             self, cell_width, x1, y1, geom_points, geom_edges,
-            geom_edges_interior=geom_edges_interior,
+            geom_bounds=geom_bounds,
             mesh_name=mesh_name, section_name=section_name,
             gridded_dataset='greenland_1km_2020_04_20.epsg3413.icesheetonly.nc',  # noqa
             projection='gis-gimp', geojson_file=None)
