@@ -174,12 +174,14 @@ def append_gl_geom_points_and_edges(gl_contour, geom_points, geom_edges):
     vtx_tag = +1
     gl_points = [([pt[0], pt[1]], vtx_tag) for pt in gl_contour[:-1]]
     gl_points_ar = np.array(gl_points, dtype=jigsawpy.jigsaw_msh_t.VERT2_t)
-    # points_ar = np.concatenate((geom_points, gl_points_ar),
-    #                           dtype=jigsawpy.jigsaw_msh_t.VERT2_t)
-    points_ar = gl_points_ar
+    points_ar = np.concatenate((geom_points, gl_points_ar),
+                               dtype=jigsawpy.jigsaw_msh_t.VERT2_t)
 
     edge_tag = +1
-    indices = [i for i in range(len(gl_contour[:-1]))]
+    first_gl_pt = +4
+    last_gl_pt = first_gl_pt + len(gl_contour[:-1])
+    indices = [i for i in range(first_gl_pt, last_gl_pt)]
+    indices.append(first_gl_pt)
     gl_edges = list(zip(indices[:-1], indices[1:]))
     gl_edges_tag = [([pt[0], pt[1]], edge_tag) for pt in gl_edges]
     gl_edges_ar = np.array(gl_edges_tag, dtype=jigsawpy.jigsaw_msh_t.EDGE2_t)
@@ -187,11 +189,10 @@ def append_gl_geom_points_and_edges(gl_contour, geom_points, geom_edges):
                               dtype=jigsawpy.jigsaw_msh_t.EDGE2_t)
 
     # fill the boundary data
-    # ent_id = +1
-    # ent_type = jigsawpy.jigsaw_def_t.JIGSAW_EDGE2_TAG
-    # boundary = [(ent_id, i, ent_type) for i in range(len(geom_edges))]
-    # boundary_ar = np.array(boundary, dtype=jigsawpy.jigsaw_msh_t.BOUND_t)
-    boundary_ar = None
+    ent_id = +1
+    ent_type = jigsawpy.jigsaw_def_t.JIGSAW_EDGE2_TAG
+    boundary = [(ent_id, i, ent_type) for i in range(len(geom_edges))]
+    boundary_ar = np.array(boundary, dtype=jigsawpy.jigsaw_msh_t.BOUND_t)
 
     return points_ar, edges_ar, boundary_ar
 
