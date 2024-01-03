@@ -64,7 +64,9 @@ class Mesh(Step):
             geom_bounds=geom_bounds,
             mesh_name=mesh_name, section_name=section_name,
             gridded_dataset='greenland_1km_2020_04_20.epsg3413.icesheetonly.nc',  # noqa
-            projection='gis-gimp', geojson_file=None)
+            projection='gis-gimp',
+            preserve_geometry=True,
+            geojson_file=None)
 
         logger.info('creating graph.info')
         make_graph_file(mesh_filename=mesh_name,
