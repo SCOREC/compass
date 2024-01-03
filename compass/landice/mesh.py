@@ -813,8 +813,8 @@ def build_cell_width(self, section_name, gridded_dataset,
 
 def build_mali_mesh(self, cell_width, x1, y1, geom_points,
                     geom_edges, geom_bounds, mesh_name, section_name,
-                    gridded_dataset, projection, geojson_file=None,
-                    cores=1):
+                    gridded_dataset, projection, preserve_geometry=False,
+                    geojson_file=None, cores=1):
     """
     Create the MALI mesh based on final cell widths determined by
     :py:func:`compass.landice.mesh.build_cell_width()`, using Jigsaw and
@@ -869,6 +869,11 @@ def build_mali_mesh(self, cell_width, x1, y1, geom_points,
         Projection to be used for setting lat-long fields.
         Likely ``'gis-gimp'`` or ``'ais-bedmap2'``
 
+    preserve_geometry : logical, optional
+        set to ``True`` to ensure that all geometric model entities
+        are represented by mesh entities.  See the ``jigsaw_driver``
+        documentation for additional details.
+
     geojson_file : str, optional
         Name of geojson file that defines regional domain extent.
 
@@ -881,7 +886,9 @@ def build_mali_mesh(self, cell_width, x1, y1, geom_points,
 
     logger.info('calling build_planar_mesh')
     build_planar_mesh(cell_width, x1, y1, geom_points,
-                      geom_edges, geom_bounds, logger=logger)
+                      geom_edges, geom_bounds,
+                      preserve_geometry=preserve_geometry,
+                      logger=logger)
     dsMesh = xarray.open_dataset('base_mesh.nc')
     logger.info('culling mesh')
     dsMesh = cull(dsMesh, logger=logger)

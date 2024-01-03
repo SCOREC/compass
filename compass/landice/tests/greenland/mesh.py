@@ -92,7 +92,9 @@ class Mesh(Step):
             geom_bounds=geom_bounds,
             mesh_name=self.mesh_filename, section_name=section_name,
             gridded_dataset=source_gridded_dataset_1km,
-            projection=src_proj, geojson_file=None)
+            projection=src_proj,
+            preserve_geometry=True,
+            geojson_file=None)
 
         # Create scrip file for the newly generated mesh
         logger.info('creating scrip file for destination mesh')
