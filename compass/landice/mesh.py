@@ -471,6 +471,9 @@ def writeContoursToVtk(contour, file):
 
 
 def collapse_small_edges(contour, small, debug=True):
+    # assert that there is a loop
+    assert (contour[0] == contour[-1]).all()
+
     print("collapse_small_edges start\n")
     tic = time.time()
     collapsed = []
@@ -482,16 +485,22 @@ def collapse_small_edges(contour, small, debug=True):
         pt = contour[current]
         next_pt = contour[next]
         dist = np.linalg.norm(pt - next_pt)
-        if (dist <= small and debug):
-            print("pt[i] {} {} pt[i+1] {} {}".
-                  format(pt[0], pt[1], next_pt[0], next_pt[1]))
-            print("points are {} apart, which is less than {}".
-                  format(dist, small))
+        if dist <= small:
+            if debug:
+                print("pt[{}] {} {} pt[{}] {} {}".
+                      format(current, pt[0], pt[1],
+                             next, next_pt[0], next_pt[1]))
+                print("points are {} apart, which is less than {}".
+                      format(dist, small))
             next += 1  # advance 'next' for the next evaluation
         else:
             collapsed.append(next_pt)
             current = next
             next += 1
+    # close the loop if it isn't already
+    # i.e., if the last edge was collapsed
+    if not (collapsed[0] == collapsed[-1]).all():
+        collapsed.append(collapsed[0])
     toc = time.time()
     print("collapse_small_edges done: {:.2f} seconds\n".format(toc - tic))
     print("len(contour) {} len(collapsed) {}".
@@ -786,7 +795,7 @@ def build_cell_width(self, section_name, gridded_dataset,
 
     gl_contour = mesh_gl(thk, topg, x1, y1)
 
-    gl_coarsened_contour = collapse_small_edges(gl_contour, small=10)
+    gl_coarsened_contour = collapse_small_edges(gl_contour, small=500)
 
     all_points, all_edges, bound_edges = \
         append_gl_geom_points_and_edges(gl_coarsened_contour,
