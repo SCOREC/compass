@@ -496,6 +496,7 @@ def collapse_small_edges(contour, small, debug=True):
     print("collapse_small_edges done: {:.2f} seconds\n".format(toc - tic))
     print("len(contour) {} len(collapsed) {}".
           format(len(contour), len(collapsed)))
+    writeContoursToVtk(collapsed, "gisPrimaryContourCollapsed.vtk")
     return collapsed
 
 
@@ -785,7 +786,7 @@ def build_cell_width(self, section_name, gridded_dataset,
 
     gl_contour = mesh_gl(thk, topg, x1, y1)
 
-    gl_coarsened_contour = collapse_small_edges(gl_contour, small=1)
+    gl_coarsened_contour = collapse_small_edges(gl_contour, small=10)
 
     all_points, all_edges, bound_edges = \
         append_gl_geom_points_and_edges(gl_coarsened_contour,
