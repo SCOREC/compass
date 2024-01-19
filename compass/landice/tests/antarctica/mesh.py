@@ -56,7 +56,8 @@ class Mesh(Step):
         section_name = 'mesh'
 
         logger.info('calling build_cell_width')
-        cell_width, x1, y1, geom_points, geom_edges, floodFillMask = \
+        cell_width, x1, y1, geom_points, geom_edges, \
+            geom_bounds, floodFillMask = \
             build_cell_width(
                 self, section_name=section_name,
                 gridded_dataset='antarctica_8km_2020_10_20.nc')
@@ -73,9 +74,12 @@ class Mesh(Step):
 
         build_mali_mesh(
             self, cell_width, x1, y1, geom_points, geom_edges,
+            geom_bounds=geom_bounds,
             mesh_name=self.mesh_filename, section_name=section_name,
             gridded_dataset='antarctica_8km_2020_10_20_floodFillMask.nc',
-            projection='ais-bedmap2', geojson_file=None)
+            projection='ais-bedmap2',
+            preserve_geometry=True,
+            geojson_file=None)
 
         logger.info('creating graph.info')
         make_graph_file(mesh_filename=self.mesh_filename,
