@@ -81,7 +81,8 @@ class Mesh(Step):
             self, source_gridded_dataset, bedmachine_dataset)
 
         logger.info('calling build_cell_width')
-        cell_width, x1, y1, geom_points, geom_edges, floodFillMask = \
+        cell_width, x1, y1, geom_points, geom_edges, \
+            geom_bounds, floodFillMask = \
             build_cell_width(
                 self, section_name=section_name,
                 gridded_dataset=bm_updated_gridded_dataset)
@@ -89,9 +90,12 @@ class Mesh(Step):
         # Now build the base mesh and perform the standard interpolation
         build_mali_mesh(
             self, cell_width, x1, y1, geom_points, geom_edges,
+            geom_bounds=geom_bounds,
             mesh_name=self.mesh_filename, section_name=section_name,
             gridded_dataset=bm_updated_gridded_dataset,
-            projection=src_proj, geojson_file=None)
+            projection=src_proj,
+            preserve_geometry=True,
+            geojson_file=None)
 
         # Now that we have base mesh with standard interpolation
         # perform advanced interpolation for specific fields
