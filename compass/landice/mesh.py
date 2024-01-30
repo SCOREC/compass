@@ -405,7 +405,7 @@ def writeContoursToVtk(contour, file):
     mesh.write(file)
 
 
-def collapse_small_edges(contour, small, name, debug=True):
+def collapse_small_edges(contour, small, name, debug=False):
     # assert that there is a loop
     assert (contour[0] == contour[-1]).all()
 
