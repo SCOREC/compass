@@ -405,11 +405,11 @@ def writeContoursToVtk(contour, file):
     mesh.write(file)
 
 
-def collapse_small_edges(contour, small, debug=True):
+def collapse_small_edges(contour, small, name, debug=True):
     # assert that there is a loop
     assert (contour[0] == contour[-1]).all()
 
-    print("collapse_small_edges start\n")
+    print("collapse_small_edges {} start\n".format(name))
     tic = time.time()
     collapsed = []
     current = 0
@@ -437,10 +437,12 @@ def collapse_small_edges(contour, small, debug=True):
     if not (collapsed[0] == collapsed[-1]).all():
         collapsed.append(collapsed[0])
     toc = time.time()
-    print("collapse_small_edges done: {:.2f} seconds\n".format(toc - tic))
-    print("len(contour) {} len(collapsed) {}".
-          format(len(contour), len(collapsed)))
-    writeContoursToVtk(collapsed, "gisPrimaryContourCollapsed.vtk")
+    print("collapse_small_edges {} done: {:.2f} seconds\n"
+          .format(name, toc - tic))
+    print("{} len(contour) {} len(collapsed) {}"
+          .format(name, len(contour), len(collapsed)))
+    writeContoursToVtk(collapsed,
+                       "gis{}PrimaryContourCollapsed.vtk".format(name))
     return collapsed
 
 
@@ -507,6 +509,84 @@ def mesh_gl(thk, topg, x, y):
     transformed_pts = [(pt * cell_size) + (min_x, min_y) for pt in max_contour]
 
     writeContoursToVtk(transformed_pts, "gisContours.vtk")
+
+    return transformed_pts
+
+
+def mesh_cf(thk, topg, x, y):
+    class Interp:
+        def __init__(self, points, values, fill, method='linear'):
+            self.points = points
+            self.values = values
+            self.method = method
+            self.fill = fill
+
+        def __call__(self, x, y):
+            return interpn(self.points, self.values, (x, y),
+                           bounds_error=False, fill_value=self.fill)
+
+    print("mesh_cf start\n")
+    assert (thk.shape == (len(y), len(x)))
+    tic = time.time()
+
+    cell_size = x[1] - x[0]  # assumed constant and equal in x and y
+    half_cell_size = cell_size / 2
+
+    rho_i = 910.0
+    rho_w = 1028.0
+    # Using the grounding line level set
+    # expression 'phi = rho_i * thk + rho_w * topg'
+    # results in a runtime overflow warning as 'topg'
+    # has values around 1e37 near two of the domain
+    # corners (minx,miny) and (maxx,miny).
+    # In those corners the level set distance will be set to
+    # max distance = max(maxx, maxy)
+    (rows, cols) = thk.shape
+    max_distance = max(max(x), max(y))
+    phi = np.zeros((rows, cols))
+    for i in range(rows):
+        for j in range(cols):
+            if not np.isclose(thk[i][j], 0) and thk[i][j] < 0:
+                phi[i][j] = max_distance
+            else:
+                phi[i][j] = rho_i * thk[i][j] + rho_w * topg[i][j]
+
+    has_ice = np.zeros((rows, cols))
+    for i in range(rows):
+        for j in range(cols):
+            vphi = phi[i][j]
+            if vphi > 0 and vphi != max_distance:
+                has_ice[i][j] = 1
+            if vphi < 0:
+                s_floating = (1 - rho_i / rho_w) * thk[i][j]
+                if s_floating > 0:
+                    has_ice[i][j] = 1
+
+    min_x, max_x = np.min(x), np.max(x)
+    min_y, max_y = np.min(y), np.max(y)
+    mid_pt_x, mid_pt_y = np.mgrid[min_x + half_cell_size:max_x:cell_size,
+                                  min_y + half_cell_size:max_y:cell_size]
+
+    cgi = Interp((x, y), has_ice.T, fill=max_distance, method='linear')
+    phi_mid_pt = cgi(mid_pt_x, mid_pt_y)
+    phi_mid_pt_grid = np.reshape(phi_mid_pt, mid_pt_x.shape)
+
+    ms_begin = time.time()
+    contours = find_contours(phi_mid_pt_grid, 0.0)
+    ms_end = time.time()
+    print("cf find_contours done: {:.2f} seconds".format(ms_end - ms_begin))
+
+    toc = time.time()
+    print("mesh_cf done: {:.2f} seconds\n".format(toc - tic))
+
+    max_contour = max(contours, key=len)
+    max_contour_len = len(max_contour)
+    print("cf max sized contour lenth {}\n".format(max_contour_len))
+
+    # transform the contour points back to the original coordinate system
+    transformed_pts = [(pt * cell_size) + (min_x, min_y) for pt in max_contour]
+
+    writeContoursToVtk(transformed_pts, "gisCfContours.vtk")
 
     return transformed_pts
 
@@ -729,8 +809,11 @@ def build_cell_width(self, section_name, gridded_dataset,
     vy[flood_mask == 0] = 0.0
 
     gl_contour = mesh_gl(thk, topg, x1, y1)
+    cf_contour = mesh_cf(thk, topg, x1, y1)
 
-    gl_coarsened_contour = collapse_small_edges(gl_contour, small=500)
+    gl_coarsened_contour = collapse_small_edges(gl_contour,
+                                                small=500, name="Gl")
+    collapse_small_edges(cf_contour, small=500, name="Cf")
 
     all_points, all_edges, bound_edges = \
         append_gl_geom_points_and_edges(gl_coarsened_contour,
