@@ -193,7 +193,16 @@ def set_rectangular_geom_points_and_edges(xmin, xmax, ymin, ymax):
     return geom_points, geom_edges
 
 
-def append_gl_geom_points_and_edges(gl_contour, geom_points, geom_edges):
+def make_jigsaw_bounds(geom_edges):
+    # fill the boundary data
+    ent_id = 1
+    ent_type = jigsawpy.jigsaw_def_t.JIGSAW_EDGE2_TAG
+    boundary = [(ent_id, i, ent_type) for i in range(len(geom_edges))]
+    boundary_ar = np.array(boundary, dtype=jigsawpy.jigsaw_msh_t.BOUND_t)
+    return boundary_ar
+
+
+def append_gl_geom_points_and_edges(tag, gl_contour, geom_points, geom_edges):
     """
     Combine the Jigsaw lists of points and edges that define the geometric
     model bounding polygon (``geom_points`` and ``geom_edges``, respectively)
@@ -202,6 +211,9 @@ def append_gl_geom_points_and_edges(gl_contour, geom_points, geom_edges):
 
     Parameters
     ----------
+    tag : integer
+        id assigned to the edges from gl_contour in jigsaw
+
     gl_contour : np.array
         array of tuples defining (x,y) coordinates of geometric model vertices
         points such that (1) edges are defined by adjacent pairs of points
@@ -233,13 +245,13 @@ def append_gl_geom_points_and_edges(gl_contour, geom_points, geom_edges):
     # assert that there is a loop
     assert (gl_contour[0] == gl_contour[-1]).all()
 
-    vtx_tag = +1
+    vtx_tag = tag
     gl_points = [([pt[0], pt[1]], vtx_tag) for pt in gl_contour[:-1]]
     gl_points_ar = np.array(gl_points, dtype=jigsawpy.jigsaw_msh_t.VERT2_t)
     points_ar = np.concatenate((geom_points, gl_points_ar),
                                dtype=jigsawpy.jigsaw_msh_t.VERT2_t)
 
-    edge_tag = +1
+    edge_tag = tag
     first_gl_pt = +4
     last_gl_pt = first_gl_pt + len(gl_contour[:-1])
     indices = [i for i in range(first_gl_pt, last_gl_pt)]
@@ -250,13 +262,7 @@ def append_gl_geom_points_and_edges(gl_contour, geom_points, geom_edges):
     edges_ar = np.concatenate((geom_edges, gl_edges_ar),
                               dtype=jigsawpy.jigsaw_msh_t.EDGE2_t)
 
-    # fill the boundary data
-    ent_id = +1
-    ent_type = jigsawpy.jigsaw_def_t.JIGSAW_EDGE2_TAG
-    boundary = [(ent_id, i, ent_type) for i in range(len(geom_edges))]
-    boundary_ar = np.array(boundary, dtype=jigsawpy.jigsaw_msh_t.BOUND_t)
-
-    return points_ar, edges_ar, boundary_ar
+    return points_ar, edges_ar
 
 
 def set_cell_width(self, section_name, thk, bed=None, vx=None, vy=None,
@@ -816,11 +822,16 @@ def build_cell_width(self, section_name, gridded_dataset,
 
     gl_coarsened_contour = collapse_small_edges(gl_contour,
                                                 small=500, name="Gl")
-    collapse_small_edges(cf_contour, small=500, name="Cf")
+    cf_coarsened_contour = collapse_small_edges(cf_contour,
+                                                small=500, name="Cf")
 
-    all_points, all_edges, bound_edges = \
-        append_gl_geom_points_and_edges(gl_coarsened_contour,
+    bound_edges = make_jigsaw_bounds(geom_edges)
+    all_points, all_edges = \
+        append_gl_geom_points_and_edges(2, gl_coarsened_contour,
                                         geom_points, geom_edges)
+    all_points, all_edges = \
+        append_gl_geom_points_and_edges(3, cf_coarsened_contour,
+                                        all_points, all_edges)
 
     # Calculate distance from each grid point to ice edge
     # and grounding line, for use in cell spacing functions.
