@@ -475,6 +475,19 @@ def get_phi(thk, topg, x, y):
     return phi
 
 
+def transform_max_contour(contours, x, y, name):
+    max_contour = max(contours, key=len)
+    max_contour_len = len(max_contour)
+    print("max sized contour lenth {}\n".format(max_contour_len))
+    # transform the contour points back to the original coordinate system
+    cell_size = x[1] - x[0]  # assumed constant and equal in x and y
+    min_x = np.min(x)
+    min_y = np.min(y)
+    transformed_pts = [(pt * cell_size) + (min_x, min_y) for pt in max_contour]
+    writeContoursToVtk(transformed_pts, "gis{}Contours.vtk".format(name))
+    return transformed_pts
+
+
 def mesh_gl(phi, x, y):
     print("mesh_gl start\n")
     assert (phi.shape == (len(y), len(x)))
@@ -488,18 +501,7 @@ def mesh_gl(phi, x, y):
     toc = time.time()
     print("mesh_gl done: {:.2f} seconds\n".format(toc - tic))
 
-    max_contour = max(contours, key=len)
-    max_contour_len = len(max_contour)
-    print("max sized contour lenth {}\n".format(max_contour_len))
-
-    # transform the contour points back to the original coordinate system
-    cell_size = x[1] - x[0]  # assumed constant and equal in x and y
-    min_x = np.min(x)
-    min_y = np.min(y)
-    transformed_pts = [(pt * cell_size) + (min_x, min_y) for pt in max_contour]
-    writeContoursToVtk(transformed_pts, "gisGlContours.vtk")
-
-    return transformed_pts
+    return transform_max_contour(contours, x, y, "Gl")
 
 
 def mesh_cf(phi, thk, x, y):
@@ -521,19 +523,7 @@ def mesh_cf(phi, thk, x, y):
     toc = time.time()
     print("mesh_cf done: {:.2f} seconds\n".format(toc - tic))
 
-    max_contour = max(contours, key=len)
-    max_contour_len = len(max_contour)
-    print("cf max sized contour lenth {}\n".format(max_contour_len))
-
-    # transform the contour points back to the original coordinate system
-    cell_size = x[1] - x[0]  # assumed constant and equal in x and y
-    min_x = np.min(x)
-    min_y = np.min(y)
-    transformed_pts = [(pt * cell_size) + (min_x, min_y) for pt in max_contour]
-
-    writeContoursToVtk(transformed_pts, "gisCfContours.vtk")
-
-    return transformed_pts
+    return transform_max_contour(contours, x, y, "Cf")
 
 
 def get_dist_to_edge_and_gl(self, thk, topg, x, y,
