@@ -512,17 +512,6 @@ def collapse_small_edges(contour, small, name, debug=False):
 
 
 def mesh_gl(thk, topg, x, y):
-    class Interp:
-        def __init__(self, points, values, fill, method='linear'):
-            self.points = points
-            self.values = values
-            self.method = method
-            self.fill = fill
-
-        def __call__(self, x, y):
-            return interpn(self.points, self.values, (x, y),
-                           bounds_error=False, fill_value=self.fill)
-
     print("mesh_gl start\n")
     assert (thk.shape == (len(y), len(x)))
     tic = time.time()
