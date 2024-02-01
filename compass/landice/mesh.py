@@ -462,9 +462,6 @@ def mesh_gl(thk, topg, x, y):
     assert (thk.shape == (len(y), len(x)))
     tic = time.time()
 
-    cell_size = x[1] - x[0]  # assumed constant and equal in x and y
-    half_cell_size = cell_size / 2
-
     rho_i = 910.0
     rho_w = 1028.0
     # Using the grounding line level set
@@ -484,17 +481,8 @@ def mesh_gl(thk, topg, x, y):
             else:
                 phi[i][j] = rho_i * thk[i][j] + rho_w * topg[i][j]
 
-    min_x, max_x = np.min(x), np.max(x)
-    min_y, max_y = np.min(y), np.max(y)
-    mid_pt_x, mid_pt_y = np.mgrid[min_x + half_cell_size:max_x:cell_size,
-                                  min_y + half_cell_size:max_y:cell_size]
-
-    cgi = Interp((x, y), phi.T, fill=max_distance, method='linear')
-    phi_mid_pt = cgi(mid_pt_x, mid_pt_y)
-    phi_mid_pt_grid = np.reshape(phi_mid_pt, mid_pt_x.shape)
-
     ms_begin = time.time()
-    contours = find_contours(phi_mid_pt_grid, 0.0)
+    contours = find_contours(phi.T, 0.0)
     ms_end = time.time()
     print("find_contours done: {:.2f} seconds".format(ms_end - ms_begin))
 
@@ -506,9 +494,11 @@ def mesh_gl(thk, topg, x, y):
     print("max sized contour lenth {}\n".format(max_contour_len))
 
     # transform the contour points back to the original coordinate system
+    cell_size = x[1] - x[0]  # assumed constant and equal in x and y
+    min_x = np.min(x)
+    min_y = np.min(y)
     transformed_pts = [(pt * cell_size) + (min_x, min_y) for pt in max_contour]
-
-    writeContoursToVtk(transformed_pts, "gisContours.vtk")
+    writeContoursToVtk(transformed_pts, "gisGlContours.vtk")
 
     return transformed_pts
 
