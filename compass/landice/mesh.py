@@ -502,19 +502,16 @@ def mesh_gl(phi, x, y):
     return transformed_pts
 
 
-def mesh_cf(phi, thk, topg, x, y):
+def mesh_cf(phi, thk, x, y):
     print("mesh_cf start\n")
     assert (thk.shape == (len(y), len(x)))
     tic = time.time()
 
     s_floating = (1 - rho_i() / rho_w()) * thk
     max_floating_thickness = np.max(s_floating)
-
-    (rows, cols) = thk.shape
-    for i in range(rows):
-        for j in range(cols):
-            if phi[i][j] > 0 or np.isclose(phi[i][j], 0):  # grounded ice
-                s_floating[i][j] = max_floating_thickness
+    s_floating = np.where(phi < 0,
+                          s_floating,
+                          max_floating_thickness)
 
     ms_begin = time.time()
     contours = find_contours(s_floating.T, 0.0)
@@ -758,7 +755,7 @@ def build_cell_width(self, section_name, gridded_dataset,
 
     phi = get_phi(thk, topg, x1, y1)
     gl_contour = mesh_gl(phi, x1, y1)
-    cf_contour = mesh_cf(phi, thk, topg, x1, y1)
+    cf_contour = mesh_cf(phi, thk, x1, y1)
 
     gl_coarsened_contour = collapse_small_edges(gl_contour,
                                                 small=500, name="Gl")
