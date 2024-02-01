@@ -573,15 +573,14 @@ def mesh_cf(thk, topg, x, y):
     (rows, cols) = thk.shape
     max_distance = max(max(x), max(y))
     phi = np.zeros((rows, cols))
-    s_floating = np.zeros((rows, cols))
     for i in range(rows):
         for j in range(cols):
             if not np.isclose(thk[i][j], 0) and thk[i][j] < 0:
                 phi[i][j] = max_distance
             else:
                 phi[i][j] = rho_i * thk[i][j] + rho_w * topg[i][j]
-            s_floating[i][j] = (1 - rho_i / rho_w) * thk[i][j]
 
+    s_floating = (1 - rho_i / rho_w) * thk
     max_floating_thickness = np.max(s_floating)
 
     for i in range(rows):
