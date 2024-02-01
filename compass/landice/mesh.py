@@ -510,13 +510,19 @@ def collapse_small_edges(contour, small, name, debug=False):
     return collapsed
 
 
-def mesh_gl(thk, topg, x, y):
-    print("mesh_gl start\n")
+def rho_i():
+    return np.double(910.0)
+
+
+def rho_w():
+    return np.double(1028.0)
+
+
+def get_phi(thk, topg, x, y):
+    print("get phi start\n")
     assert (thk.shape == (len(y), len(x)))
     tic = time.time()
 
-    rho_i = 910.0
-    rho_w = 1028.0
     # Using the grounding line level set
     # expression 'phi = rho_i * thk + rho_w * topg'
     # results in a runtime overflow warning as 'topg'
@@ -524,15 +530,20 @@ def mesh_gl(thk, topg, x, y):
     # corners (minx,miny) and (maxx,miny).
     # In those corners the level set distance will be set to
     # max distance = max(maxx, maxy)
-    (rows, cols) = thk.shape
     max_distance = max(max(x), max(y))
-    phi = np.zeros((rows, cols))
-    for i in range(rows):
-        for j in range(cols):
-            if not np.isclose(thk[i][j], 0) and thk[i][j] < 0:
-                phi[i][j] = max_distance
-            else:
-                phi[i][j] = rho_i * thk[i][j] + rho_w * topg[i][j]
+
+    phi = np.where(not np.allclose(thk, 0) and thk < 0,
+                   max_distance,
+                   rho_i() * thk + rho_w() * topg)
+    toc = time.time()
+    print("get_phi done: {:.2f} seconds\n".format(toc - tic))
+    return phi
+
+
+def mesh_gl(phi, x, y):
+    print("mesh_gl start\n")
+    assert (phi.shape == (len(y), len(x)))
+    tic = time.time()
 
     ms_begin = time.time()
     contours = find_contours(phi.T, 0.0)
@@ -556,33 +567,15 @@ def mesh_gl(thk, topg, x, y):
     return transformed_pts
 
 
-def mesh_cf(thk, topg, x, y):
+def mesh_cf(phi, thk, topg, x, y):
     print("mesh_cf start\n")
     assert (thk.shape == (len(y), len(x)))
     tic = time.time()
 
-    rho_i = 910.0
-    rho_w = 1028.0
-    # Using the grounding line level set
-    # expression 'phi = rho_i * thk + rho_w * topg'
-    # results in a runtime overflow warning as 'topg'
-    # has values around 1e37 near two of the domain
-    # corners (minx,miny) and (maxx,miny).
-    # In those corners the level set distance will be set to
-    # max distance = max(maxx, maxy)
-    (rows, cols) = thk.shape
-    max_distance = max(max(x), max(y))
-    phi = np.zeros((rows, cols))
-    for i in range(rows):
-        for j in range(cols):
-            if not np.isclose(thk[i][j], 0) and thk[i][j] < 0:
-                phi[i][j] = max_distance
-            else:
-                phi[i][j] = rho_i * thk[i][j] + rho_w * topg[i][j]
-
-    s_floating = (1 - rho_i / rho_w) * thk
+    s_floating = (1 - rho_i() / rho_w()) * thk
     max_floating_thickness = np.max(s_floating)
 
+    (rows, cols) = thk.shape
     for i in range(rows):
         for j in range(cols):
             if phi[i][j] > 0 or np.isclose(phi[i][j], 0):  # grounded ice
@@ -828,8 +821,9 @@ def build_cell_width(self, section_name, gridded_dataset,
     vx[flood_mask == 0] = 0.0
     vy[flood_mask == 0] = 0.0
 
-    gl_contour = mesh_gl(thk, topg, x1, y1)
-    cf_contour = mesh_cf(thk, topg, x1, y1)
+    phi = get_phi(thk, topg, x1, y1)
+    gl_contour = mesh_gl(phi, x1, y1)
+    cf_contour = mesh_cf(phi, thk, topg, x1, y1)
 
     gl_coarsened_contour = collapse_small_edges(gl_contour,
                                                 small=500, name="Gl")
