@@ -388,13 +388,15 @@ def set_cell_width(self, section_name, thk, bed=None, vx=None, vy=None,
 def writeContoursToVtk(contour, file):
     """Writes a VTK mesh file from the given contour
        (chain of vertices that form edges)."""
+    def add_zero_z_coord(pt):
+        return np.concatenate((pt, [0]))
     points = []
     line_indices = []
     first_point = 0
     for i in range(len(contour) - 1):
-        points.append(contour[i])
+        points.append(add_zero_z_coord(contour[i]))
         line_indices.append([first_point + i, first_point + i + 1])
-    points.append(contour[-1])
+    points.append(add_zero_z_coord(contour[-1]))
     first_point = len(points)
 
     cells = [("line", line_indices)]
