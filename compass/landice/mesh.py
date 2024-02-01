@@ -542,23 +542,12 @@ def mesh_gl(thk, topg, x, y):
     (rows, cols) = thk.shape
     max_distance = max(max(x), max(y))
     phi = np.zeros((rows, cols))
-    f = Dataset("foo.nc", 'w')
-    f.createDimension("x1", len(x))
-    f.createDimension("y1", len(y))
-    phi_nc = f.createVariable('phi', "f4", ("x1", "y1"))
-    x1 = f.createVariable('x1', "f4", "x1")
-    y1 = f.createVariable('y1', "f4", "y1")
-    x1[:] = x[:]
-    y1[:] = y[:]
-
     for i in range(rows):
         for j in range(cols):
             if not np.isclose(thk[i][j], 0) and thk[i][j] < 0:
                 phi[i][j] = max_distance
             else:
                 phi[i][j] = rho_i * thk[i][j] + rho_w * topg[i][j]
-    phi_nc[:, :] = phi[:, :]
-    f.close()
 
     min_x, max_x = np.min(x), np.max(x)
     min_y, max_y = np.min(y), np.max(y)
