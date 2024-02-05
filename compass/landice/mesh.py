@@ -496,24 +496,24 @@ def transform_max_contour(contours, x, y, name):
     return transformed_pts
 
 
-def mesh_gl(phi, x, y):
-    print("mesh_gl start\n")
+def extract_gl_contour(phi, x, y):
+    print("extract_gl_contour start\n")
     assert (phi.shape == (len(y), len(x)))
     tic = time.time()
 
     ms_begin = time.time()
     contours = find_contours(phi.T, 0.0)
     ms_end = time.time()
-    print("find_contours done: {:.2f} seconds".format(ms_end - ms_begin))
+    print("gl find_contours done: {:.2f} seconds".format(ms_end - ms_begin))
 
     toc = time.time()
-    print("mesh_gl done: {:.2f} seconds\n".format(toc - tic))
+    print("extract_gl_contour done: {:.2f} seconds\n".format(toc - tic))
 
     return transform_max_contour(contours, x, y, "Gl")
 
 
-def mesh_cf(phi, thk, x, y):
-    print("mesh_cf start\n")
+def extract_margin_contour(phi, thk, x, y):
+    print("extract_margin_contour start\n")
     assert (thk.shape == (len(y), len(x)))
     tic = time.time()
 
@@ -526,12 +526,13 @@ def mesh_cf(phi, thk, x, y):
     ms_begin = time.time()
     contours = find_contours(s_floating.T, 0.0)
     ms_end = time.time()
-    print("cf find_contours done: {:.2f} seconds".format(ms_end - ms_begin))
+    print("margin find_contours done: {:.2f} seconds".
+          format(ms_end - ms_begin))
 
     toc = time.time()
-    print("mesh_cf done: {:.2f} seconds\n".format(toc - tic))
+    print("extract_margin_contour done: {:.2f} seconds\n".format(toc - tic))
 
-    return transform_max_contour(contours, x, y, "Cf")
+    return transform_max_contour(contours, x, y, "margin")
 
 
 def get_dist_to_edge_and_gl(self, thk, topg, x, y,
@@ -752,20 +753,20 @@ def build_cell_width(self, section_name, gridded_dataset,
     vy[flood_mask == 0] = 0.0
 
     phi = get_phi(thk, topg, x1, y1)
-    gl_contour = mesh_gl(phi, x1, y1)
-    cf_contour = mesh_cf(phi, thk, x1, y1)
+    gl_contour = extract_gl_contour(phi, x1, y1)
+    margin_contour = extract_margin_contour(phi, thk, x1, y1)
 
     gl_coarsened_contour = collapse_small_edges(gl_contour,
                                                 small=500, name="Gl")
-    cf_coarsened_contour = collapse_small_edges(cf_contour,
-                                                small=500, name="Cf")
+    margin_coarsened_contour = collapse_small_edges(margin_contour,
+                                                    small=500, name="margin")
 
     bound_edges = make_jigsaw_bounds(geom_edges)
     all_points, all_edges = \
         append_gl_geom_points_and_edges(2, gl_coarsened_contour,
                                         geom_points, geom_edges)
     all_points, all_edges = \
-        append_gl_geom_points_and_edges(3, cf_coarsened_contour,
+        append_gl_geom_points_and_edges(3, margin_coarsened_contour,
                                         all_points, all_edges)
 
     # Calculate distance from each grid point to ice edge
