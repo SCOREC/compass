@@ -412,6 +412,48 @@ def writeContoursToVtk(contour, file):
     mesh.write(file)
 
 
+def remove_coincident_edges(contour, name, debug=True):
+    # assert that there is a loop
+    assert (contour[0] == contour[-1]).all()
+    assert (len(contour) > 3)
+    fn_name = "remove_coincident_edges"
+    print("{} {} start\n".format(fn_name, name))
+    tic = time.time()
+    clean = []
+    left = 0
+    middle = 1
+    right = 2
+    clean.append(contour[left])
+    last_idx = len(contour) - 1
+    while left < last_idx and middle <= last_idx and right <= last_idx:
+        left_pt = contour[left]
+        middle_pt = contour[middle]
+        right_pt = contour[right]
+        if np.allclose(left_pt, right_pt):
+            if debug:
+                print("coincident edges found near pt {:.4E} {:.4E}"
+                      "left {} mid {} right {}"
+                      .format(middle_pt[0], middle_pt[1], left, middle, right))
+            right += 1  # advance 'right' for the next evaluation
+        else:
+            clean.append(middle)
+            left = middle
+            middle += 1
+            right += 1
+    # close the loop if it isn't already
+    # i.e., if the last edge was removed
+    if not (clean[0] == clean[-1]).all():
+        clean.append(clean[0])
+    toc = time.time()
+    print("{} {} done: {:.2f} seconds\n"
+          .format(fn_name, name, toc - tic))
+    print("{} len(contour) {} len(clean) {}"
+          .format(name, len(contour), len(clean)))
+    writeContoursToVtk(clean,
+                       "{}PrimaryContourClean.vtk".format(name))
+    return clean
+
+
 def collapse_small_edges(contour, small, name, debug=False):
     # assert that there is a loop
     assert (contour[0] == contour[-1]).all()
@@ -753,19 +795,16 @@ def build_cell_width(self, section_name, gridded_dataset,
     vy[flood_mask == 0] = 0.0
 
     phi = get_phi(thk, topg, x1, y1)
-    gl_contour = extract_gl_contour(phi, x1, y1)
     margin_contour = extract_margin_contour(phi, thk, x1, y1)
 
-    gl_coarsened_contour = collapse_small_edges(gl_contour,
-                                                small=500, name="Gl")
     margin_coarsened_contour = collapse_small_edges(margin_contour,
                                                     small=500, name="margin")
+    margin_clean_contour = remove_coincident_edges(margin_coarsened_contour,
+                                                   name="margin")
 
     bound_edges = make_jigsaw_bounds(geom_edges)
-    all_points, all_edges = append_contour(2, gl_coarsened_contour,
+    all_points, all_edges = append_contour(3, margin_clean_contour,
                                            geom_points, geom_edges)
-    all_points, all_edges = append_contour(3, margin_coarsened_contour,
-                                           all_points, all_edges)
 
     # Calculate distance from each grid point to ice edge
     # and grounding line, for use in cell spacing functions.
