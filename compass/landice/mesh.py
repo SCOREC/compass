@@ -492,14 +492,16 @@ def remove_triangles(contour, name, debug=True):
     a = 0
     b = 1
     c = 2
-    d = 4
+    d = 3
     clean.append(contour[a])
     last_idx = len(contour) - 1
+    tri_removed = 0
     while d <= last_idx:
         if np.allclose(contour[a], contour[d]):
             if debug:
                 print("triangle found near pt {:.4E} {:.4E}"
                       .format(contour[a][0], contour[a][1]))
+            tri_removed += 1
             clean.append(contour[d])
             # skip middle points
             a = d
@@ -519,6 +521,7 @@ def remove_triangles(contour, name, debug=True):
     toc = time.time()
     print("{} {} done: {:.2f} seconds\n"
           .format(fn_name, name, toc - tic))
+    print("triangles removed {}".format(tri_removed))
     print("{} len(contour) {} len(clean) {}"
           .format(name, len(contour), len(clean)))
     writeContoursToVtk(clean,
