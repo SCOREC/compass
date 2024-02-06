@@ -478,6 +478,24 @@ def writeContoursToVtk(contour, file):
 
 
 def remove_coincident_edges(contour, name, debug=True):
+
+    class Edge:
+        def __init__(self, v0, v1):
+            assert (len(v0) == 2)
+            assert (len(v1) == 2)
+            self.v0 = v0
+            self.v1 = v1
+
+    def are_edges_coincident(e1, e2):
+        assert isinstance(e1, Edge)
+        assert isinstance(e2, Edge)
+        if np.allclose(e1.v0, e2.v0) and np.allclose(e1.v1, e2.v1):
+            return True
+        elif np.allclose(e1.v0, e2.v1) and np.allclose(e1.v1, e2.v0):
+            return True
+        else:
+            return False
+
     # assert that there is a loop
     assert (contour[0] == contour[-1]).all()
     assert (len(contour) > 3)
@@ -491,18 +509,21 @@ def remove_coincident_edges(contour, name, debug=True):
     clean.append(contour[left])
     last_idx = len(contour) - 1
     while left < last_idx and middle <= last_idx and right <= last_idx:
-        left_pt = contour[left]
-        middle_pt = contour[middle]
-        right_pt = contour[right]
-        if np.allclose(left_pt, right_pt):
+        e1 = Edge(contour[left], contour[middle])
+        e2 = Edge(contour[middle], contour[right])
+        if are_edges_coincident(e1, e2):
             if debug:
                 print("coincident edges found near pt {:.4E} {:.4E}"
                       "left {} mid {} right {}"
-                      .format(middle_pt[0], middle_pt[1], left, middle, right))
-            right += 1  # advance 'right' for the next evaluation
+                      .format(contour[middle][0], contour[middle][1],
+                              left, middle, right))
+            # skip both edges
+            left += 2
+            middle += 2
+            right += 2
         else:
-            clean.append(middle)
-            left = middle
+            clean.append(contour[middle])
+            left += 1
             middle += 1
             right += 1
     # close the loop if it isn't already
