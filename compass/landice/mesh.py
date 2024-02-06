@@ -412,6 +412,55 @@ def writeContoursToVtk(contour, file):
     mesh.write(file)
 
 
+def remove_triangles(contour, name, debug=True):
+    """ find sequences of four points where the first
+    and last point are the same and remove the second
+    and third points """
+
+    # assert that there is a loop
+    assert (contour[0] == contour[-1]).all()
+    assert (len(contour) > 4)
+    fn_name = "remove_triangles"
+    print("{} {} start\n".format(fn_name, name))
+    tic = time.time()
+    clean = []
+    a = 0
+    b = 1
+    c = 2
+    d = 4
+    clean.append(contour[a])
+    last_idx = len(contour) - 1
+    while d <= last_idx:
+        if np.allclose(contour[a], contour[d]):
+            if debug:
+                print("triangle found near pt {:.4E} {:.4E}"
+                      .format(contour[a][0], contour[a][1]))
+            clean.append(contour[d])
+            # skip middle points
+            a = d
+            b = a + 1
+            c = b + 1
+            d = c + 1
+        else:
+            clean.append(contour[b])
+            a += 1
+            b += 1
+            c += 1
+            d += 1
+    # close the loop if it isn't already
+    # i.e., if the last edge was removed
+    if not (clean[0] == clean[-1]).all():
+        clean.append(clean[0])
+    toc = time.time()
+    print("{} {} done: {:.2f} seconds\n"
+          .format(fn_name, name, toc - tic))
+    print("{} len(contour) {} len(clean) {}"
+          .format(name, len(contour), len(clean)))
+    writeContoursToVtk(clean,
+                       "{}PrimaryContourNoTri.vtk".format(name))
+    return clean
+
+
 def remove_coincident_edges(contour, name, debug=True):
 
     class Edge:
@@ -820,8 +869,10 @@ def build_cell_width(self, section_name, gridded_dataset,
 
     margin_coarsened_contour = collapse_small_edges(margin_contour,
                                                     small=500, name="margin")
-    margin_clean_contour = remove_coincident_edges(margin_coarsened_contour,
-                                                   name="margin")
+    margin_nocoin_contour = remove_coincident_edges(margin_coarsened_contour,
+                                                    name="margin")
+    margin_clean_contour = remove_triangles(margin_nocoin_contour,
+                                            name="margin")
 
     bound_edges = make_jigsaw_bounds(geom_edges)
     all_points, all_edges = append_contour(3, margin_clean_contour,
