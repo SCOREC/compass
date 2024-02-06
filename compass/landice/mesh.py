@@ -502,7 +502,6 @@ def remove_triangles(contour, name, debug=True):
                 print("triangle found near pt {:.4E} {:.4E}"
                       .format(contour[a][0], contour[a][1]))
             tri_removed += 1
-            clean.append(contour[d])
             # skip middle points
             a = d
             b = a + 1
@@ -514,6 +513,10 @@ def remove_triangles(contour, name, debug=True):
             b += 1
             c += 1
             d += 1
+    # add the last points
+    while c <= last_idx:
+        clean.append(contour[c])
+        c += 1
     # close the loop if it isn't already
     # i.e., if the last edge was removed
     if not (clean[0] == clean[-1]).all():
