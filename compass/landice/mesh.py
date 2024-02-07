@@ -632,7 +632,7 @@ def collapse_small_edges(contour, small, name, debug=False):
     print("{} len(contour) {} len(collapsed) {}"
           .format(name, len(contour), len(collapsed)))
     writeContoursToVtk(collapsed,
-                       "gis{}PrimaryContourCollapsed.vtk".format(name))
+                       "{}PrimaryContourCollapsed.vtk".format(name))
     return collapsed
 
 
@@ -675,7 +675,7 @@ def transform_max_contour(contours, x, y, name):
     min_x = np.min(x)
     min_y = np.min(y)
     transformed_pts = [(pt * cell_size) + (min_x, min_y) for pt in max_contour]
-    writeContoursToVtk(transformed_pts, "gis{}Contours.vtk".format(name))
+    writeContoursToVtk(transformed_pts, "{}Contours.vtk".format(name))
     return transformed_pts
 
 
@@ -714,6 +714,25 @@ def extract_margin_contour(phi, thk, x, y):
 
     toc = time.time()
     print("extract_margin_contour done: {:.2f} seconds\n".format(toc - tic))
+
+    return transform_max_contour(contours, x, y, "margin")
+
+
+def extract_margin_contour2(phi, x, y):
+    """ operate directly on the dist_to_edge field...
+    results in a contour with only 700 edges... too short """
+
+    fn_name = "extract_margin_contour2"
+    print("{} start".format(fn_name))
+    tic = time.time()
+    ms_begin = time.time()
+    contours = find_contours(phi.T, 0.0)
+    ms_end = time.time()
+    print("{} find_contours done: {:.2f} seconds".
+          format(fn_name, ms_end - ms_begin))
+
+    toc = time.time()
+    print("{} done: {:.2f} seconds\n".format(fn_name, toc - tic))
 
     return transform_max_contour(contours, x, y, "margin")
 
@@ -936,8 +955,14 @@ def build_cell_width(self, section_name, gridded_dataset,
     vy[flood_mask == 0] = 0.0
 
     phi = get_phi(thk, topg, x1, y1)
-    margin_contour = extract_margin_contour(phi, thk, x1, y1)
+    gl_contour = extract_gl_contour(phi, x1, y1)
+    gl_coarsened_contour = collapse_small_edges(gl_contour,
+                                                small=500, name="gl")
+    gl_nocoin_contour = remove_coincident_edges(gl_coarsened_contour,
+                                                name="gl")
+    remove_triangles(gl_nocoin_contour, name="gl")
 
+    margin_contour = extract_margin_contour(phi, thk, x1, y1)
     margin_coarsened_contour = collapse_small_edges(margin_contour,
                                                     small=500, name="margin")
     margin_nocoin_contour = remove_coincident_edges(margin_coarsened_contour,
@@ -954,6 +979,13 @@ def build_cell_width(self, section_name, gridded_dataset,
     distToEdge, distToGL = get_dist_to_edge_and_gl(
         self, thk, topg, x1,
         y1, section_name=section_name)
+
+    m_contour = extract_margin_contour2(distToEdge, x1, y1)
+    m_coarsened_contour = collapse_small_edges(m_contour,
+                                               small=500, name="margin2")
+    m_nocoin_contour = remove_coincident_edges(m_coarsened_contour,
+                                               name="margin2")
+    remove_triangles(m_nocoin_contour, name="margin2")
 
     # Set cell widths based on mesh parameters set in config file
     cell_width = set_cell_width(self, section_name=section_name,
