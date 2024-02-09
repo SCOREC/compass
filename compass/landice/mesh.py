@@ -486,7 +486,6 @@ def remove_triangles(contour, name, debug=False):
     assert (contour[0] == contour[-1]).all()
     assert (len(contour) > 4)
     fn_name = "remove_triangles"
-    print("{} {} start\n".format(fn_name, name))
     tic = time.time()
     clean = []
     a = 0
@@ -522,11 +521,10 @@ def remove_triangles(contour, name, debug=False):
     if not (clean[0] == clean[-1]).all():
         clean.append(clean[0])
     toc = time.time()
+    print("{} {} removed {} triangles"
+          .format(fn_name, name, tri_removed))
     print("{} {} done: {:.2f} seconds\n"
           .format(fn_name, name, toc - tic))
-    print("triangles removed {}".format(tri_removed))
-    print("{} len(contour) {} len(clean) {}"
-          .format(name, len(contour), len(clean)))
     writeContoursToVtk(clean,
                        "{}PrimaryContourNoTri.vtk".format(name))
     return clean
@@ -554,8 +552,8 @@ def remove_coincident_edges(contour, name, debug=False):
     # assert that there is a loop
     assert (contour[0] == contour[-1]).all()
     assert (len(contour) > 3)
+    coincident_count = 0
     fn_name = "remove_coincident_edges"
-    print("{} {} start\n".format(fn_name, name))
     tic = time.time()
     clean = []
     left = 0
@@ -573,6 +571,7 @@ def remove_coincident_edges(contour, name, debug=False):
                       .format(contour[middle][0], contour[middle][1],
                               left, middle, right))
             # skip both edges
+            coincident_count += 1
             left += 2
             middle += 2
             right += 2
@@ -586,10 +585,10 @@ def remove_coincident_edges(contour, name, debug=False):
     if not (clean[0] == clean[-1]).all():
         clean.append(clean[0])
     toc = time.time()
+    print("{} {} removed {} edges"
+          .format(fn_name, name, coincident_count))
     print("{} {} done: {:.2f} seconds\n"
           .format(fn_name, name, toc - tic))
-    print("{} len(contour) {} len(clean) {}"
-          .format(name, len(contour), len(clean)))
     writeContoursToVtk(clean,
                        "{}PrimaryContourClean.vtk".format(name))
     return clean
@@ -599,7 +598,7 @@ def collapse_small_edges(contour, small, name, debug=False):
     # assert that there is a loop
     assert (contour[0] == contour[-1]).all()
 
-    print("collapse_small_edges {} start\n".format(name))
+    collapsed_count = 0
     tic = time.time()
     collapsed = []
     current = 0
@@ -618,6 +617,7 @@ def collapse_small_edges(contour, small, name, debug=False):
                 print("points are {} apart, which is less than {}".
                       format(dist, small))
             next += 1  # advance 'next' for the next evaluation
+            collapsed_count += 1
         else:
             collapsed.append(next_pt)
             current = next
@@ -627,10 +627,10 @@ def collapse_small_edges(contour, small, name, debug=False):
     if not (collapsed[0] == collapsed[-1]).all():
         collapsed.append(collapsed[0])
     toc = time.time()
+    print("collapse_small_edges {} removed {} edges"
+          .format(name, collapsed_count))
     print("collapse_small_edges {} done: {:.2f} seconds\n"
           .format(name, toc - tic))
-    print("{} len(contour) {} len(collapsed) {}"
-          .format(name, len(contour), len(collapsed)))
     writeContoursToVtk(collapsed,
                        "{}PrimaryContourCollapsed.vtk".format(name))
     return collapsed
@@ -688,56 +688,18 @@ def transform_max_contour(contours, x, y, name):
     return transformed_pts
 
 
-def extract_gl_contour(phi, x, y):
-    print("extract_gl_contour start\n")
-    assert (phi.shape == (len(y), len(x)))
+def extract_contour(field, x, y, name):
+    """ the field is expected to be either 0 or 1 at
+    each grid point """
+
+    print("{} extract_contour start".format(name))
+    assert (field.shape == (len(y), len(x)))
     tic = time.time()
-
-    ms_begin = time.time()
-    contours = find_contours(phi.T, 0.0)
-    ms_end = time.time()
-    print("gl find_contours done: {:.2f} seconds".format(ms_end - ms_begin))
-
+    contours = find_contours(field.T, 0.5)
+    contours_xform = transform_max_contour(contours, x, y, name)
     toc = time.time()
-    print("extract_gl_contour done: {:.2f} seconds\n".format(toc - tic))
-
-    return transform_max_contour(contours, x, y, "Gl")
-
-
-def extract_margin_contour(s_floating, x, y):
-    print("extract_margin_contour start\n")
-    assert (s_floating.shape == (len(y), len(x)))
-    tic = time.time()
-
-    ms_begin = time.time()
-    contours = find_contours(s_floating.T, 0.5)
-    ms_end = time.time()
-    print("margin find_contours done: {:.2f} seconds".
-          format(ms_end - ms_begin))
-
-    toc = time.time()
-    print("extract_margin_contour done: {:.2f} seconds\n".format(toc - tic))
-
-    return transform_max_contour(contours, x, y, "margin")
-
-
-def extract_margin_contour2(phi, x, y):
-    """ operate directly on the dist_to_edge field...
-    results in a contour with only 700 edges... too short """
-
-    fn_name = "extract_margin_contour2"
-    print("{} start".format(fn_name))
-    tic = time.time()
-    ms_begin = time.time()
-    contours = find_contours(phi.T, 0.0)
-    ms_end = time.time()
-    print("{} find_contours done: {:.2f} seconds".
-          format(fn_name, ms_end - ms_begin))
-
-    toc = time.time()
-    print("{} done: {:.2f} seconds\n".format(fn_name, toc - tic))
-
-    return transform_max_contour(contours, x, y, "margin")
+    print("{} extract_contour done: {:.2f} seconds\n".format(name, toc - tic))
+    return contours_xform
 
 
 def get_dist_to_edge_and_gl(self, thk, topg, x, y,
@@ -958,7 +920,8 @@ def build_cell_width(self, section_name, gridded_dataset,
     vy[flood_mask == 0] = 0.0
 
     phi = get_phi(thk, topg, x1, y1)
-    gl_contour = extract_gl_contour(phi, x1, y1)
+    phi_ff = gridded_flood_fill(phi)
+    gl_contour = extract_contour(phi_ff, x1, y1, "gl")
     gl_coarsened_contour = collapse_small_edges(gl_contour,
                                                 small=500, name="gl")
     gl_nocoin_contour = remove_coincident_edges(gl_coarsened_contour,
@@ -985,7 +948,7 @@ def build_cell_width(self, section_name, gridded_dataset,
     f_var[:, :] = s_height_ff[:, :]
     out_file.close()
 
-    margin_contour = extract_margin_contour(s_height_ff, x1, y1)
+    margin_contour = extract_contour(s_height_ff, x1, y1, "margin")
     margin_coarsened_contour = collapse_small_edges(margin_contour,
                                                     small=500, name="margin")
     margin_nocoin_contour = remove_coincident_edges(margin_coarsened_contour,
