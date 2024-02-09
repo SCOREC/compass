@@ -627,7 +627,7 @@ def extract_contour(field, x, y, name):
     """ the field is expected to be either 0 or 1 at
     each grid point """
 
-    print("{} extract_contour start".format(name))
+    assert np.all(v == 0 or v == 1 for v in field)
     assert (field.shape == (len(y), len(x)))
     tic = time.time()
     contours = find_contours(field.T, 0.5)
