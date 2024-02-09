@@ -477,7 +477,7 @@ def writeContoursToVtk(contour, file):
     mesh.write(file)
 
 
-def remove_triangles(contour, name, debug=True):
+def remove_triangles(contour, name, debug=False):
     """ find sequences of four points where the first
     and last point are the same and remove the second
     and third points """
@@ -532,7 +532,7 @@ def remove_triangles(contour, name, debug=True):
     return clean
 
 
-def remove_coincident_edges(contour, name, debug=True):
+def remove_coincident_edges(contour, name, debug=False):
 
     class Edge:
         def __init__(self, v0, v1):
@@ -666,6 +666,15 @@ def get_phi(thk, topg, x, y):
     return phi
 
 
+def get_ice_surface_height(phi, topg, thk):
+    # upper ice surface height where ice is floating
+    s_floating = (1 - (rho_i() / rho_w())) * thk
+    s_grounded = topg + thk
+    # set the height to s_floating where phi < 0 and s_grounded otherwise
+    s_height = np.where(phi < 0, s_floating, s_grounded)
+    return s_height
+
+
 def transform_max_contour(contours, x, y, name):
     max_contour = max(contours, key=len)
     max_contour_len = len(max_contour)
@@ -695,19 +704,13 @@ def extract_gl_contour(phi, x, y):
     return transform_max_contour(contours, x, y, "Gl")
 
 
-def extract_margin_contour(phi, thk, x, y):
+def extract_margin_contour(s_floating, x, y):
     print("extract_margin_contour start\n")
-    assert (thk.shape == (len(y), len(x)))
+    assert (s_floating.shape == (len(y), len(x)))
     tic = time.time()
 
-    s_floating = (1 - rho_i() / rho_w()) * thk
-    max_floating_thickness = np.max(s_floating)
-    s_floating = np.where(phi < 0,
-                          s_floating,
-                          max_floating_thickness)
-
     ms_begin = time.time()
-    contours = find_contours(s_floating.T, 0.0)
+    contours = find_contours(s_floating.T, 0.5)
     ms_end = time.time()
     print("margin find_contours done: {:.2f} seconds".
           format(ms_end - ms_begin))
@@ -962,7 +965,27 @@ def build_cell_width(self, section_name, gridded_dataset,
                                                 name="gl")
     remove_triangles(gl_nocoin_contour, name="gl")
 
-    margin_contour = extract_margin_contour(phi, thk, x1, y1)
+    s_height = get_ice_surface_height(phi, topg, thk)
+    s_height_ff = gridded_flood_fill(s_height)
+
+    out_file = Dataset("s_height.nc", 'w')
+    out_file.createDimension("x1", len(x1))
+    out_file.createDimension("y1", len(y1))
+    x1_var = out_file.createVariable("x1", "f8", ("x1"))
+    x1_var[:] = x1[:]
+    y1_var = out_file.createVariable("y1", "f8", ("y1"))
+    y1_var[:] = y1[:]
+    thk_var = out_file.createVariable("thk", "f8", ("y1", "x1"))
+    thk_var[:, :] = thk[:, :]
+    phi_var = out_file.createVariable("phi", "f8", ("y1", "x1"))
+    phi_var[:, :] = phi[:, :]
+    s_var = out_file.createVariable("s_height", "f8", ("y1", "x1"))
+    s_var[:, :] = s_height[:, :]
+    f_var = out_file.createVariable("s_height_ff", "f8", ("y1", "x1"))
+    f_var[:, :] = s_height_ff[:, :]
+    out_file.close()
+
+    margin_contour = extract_margin_contour(s_height_ff, x1, y1)
     margin_coarsened_contour = collapse_small_edges(margin_contour,
                                                     small=500, name="margin")
     margin_nocoin_contour = remove_coincident_edges(margin_coarsened_contour,
@@ -979,13 +1002,6 @@ def build_cell_width(self, section_name, gridded_dataset,
     distToEdge, distToGL = get_dist_to_edge_and_gl(
         self, thk, topg, x1,
         y1, section_name=section_name)
-
-    m_contour = extract_margin_contour2(distToEdge, x1, y1)
-    m_coarsened_contour = collapse_small_edges(m_contour,
-                                               small=500, name="margin2")
-    m_nocoin_contour = remove_coincident_edges(m_coarsened_contour,
-                                               name="margin2")
-    remove_triangles(m_nocoin_contour, name="margin2")
 
     # Set cell widths based on mesh parameters set in config file
     cell_width = set_cell_width(self, section_name=section_name,
