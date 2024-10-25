@@ -19,7 +19,6 @@ from netCDF4 import Dataset
 from skimage.measure import find_contours
 from scipy.interpolate import NearestNDInterpolator, interpn
 from scipy import ndimage
-import compass.landice.marching_cubes_2d as mc
 
 
 def mpas_flood_fill(seed_mask, grow_mask, cellsOnCell, nEdgesOnCell,
