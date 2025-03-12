@@ -17,7 +17,7 @@ jobs:
         run: |
           # create top level working directory
           mkdir compassDev
-          cd !$
+          cd $_
           root=$PWD
           
           # clone the modified compass repo
