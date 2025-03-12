@@ -21,12 +21,11 @@ jobs:
           root=$PWD
           
           # clone the modified compass repo
-          git clone --recursive git@github.com:MPAS-Dev/compass.git
+          git clone --recursive https://github.com/MPAS-Dev/compass.git
           
-          # checkout a branch that adds support for mpirun (instead of srun) - See PR
-          https://github.com/MPAS-Dev/compass/pull/890
+          # checkout the working branch
           pushd compass
-          git remote add scorec git@github.com:SCOREC/compass.git
+          git remote add scorec https://github.com/SCOREC/compass.git
           git fetch scorec
           git checkout cws/simmetrixMeshGen
 
