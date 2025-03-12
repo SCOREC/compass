@@ -21,10 +21,16 @@ jobs:
           root=$PWD
           
           # clone the modified compass repo
-          git clone --recursive https://github.com/MPAS-Dev/compass.git
+          git clone https://github.com/MPAS-Dev/compass.git
+          pushd compass
+
+          # use https for submodules - runner cannot use git protocol
+          sed -i 's!git@github.com:!https://github.com/!g' .gitmodules
+
+          # clone submodules
+          git submodule update --init
           
           # checkout the working branch
-          pushd compass
           git remote add scorec https://github.com/SCOREC/compass.git
           git fetch scorec
           git checkout cws/simmetrixMeshGen
@@ -36,7 +42,7 @@ jobs:
           ./conda/configure_compass_env.py --conda $root/mambaForge --mpi mpich
           
           # enable the compass environment
-          source load_dev_compass_1.7.0-alpha.1_mpich.sh 
+          source load_dev_compass_1.7.0-alpha.1_mpich.sh
           
           # install the meshio package to support writing contours to vtk
           pip install meshio
@@ -73,7 +79,7 @@ jobs:
           
           # setup the greenland mesh generation test case
           testDir=$root/gis_mesh_gen
-          compass setup -w $testDir -t landice/greenland/mesh_gen -f system.cfg 
+          compass setup -w $testDir -t landice/greenland/mesh_gen -f system.cfg
           
           # run the test case
           cd $testDir
