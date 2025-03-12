@@ -9,10 +9,11 @@ on:
    - cron: "0 9 * * *"  #daily at 9am
 
 jobs:
-  setup_and_run_gis_coarse_meshgen:
-    name: setup_and_run_gis_coarse_meshgen
+  setup_and_run_job:
+    name: setup_and_run_job
     runs-on: ubuntu-latest
     steps:
+      - name: setup_and_run_step
         run: |
           # create top level working directory
           mkdir compassDev
