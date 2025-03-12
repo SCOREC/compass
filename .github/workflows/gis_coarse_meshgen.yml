@@ -1,0 +1,81 @@
+name: CI/CD Build Workflow
+
+on:
+  push:
+    branches: [cws/simmetrixMeshGen]
+  pull_request:
+    branches: [cws/simmetrixMeshGen]
+  schedule:
+   - cron: "0 9 * * *"  #daily at 9am
+
+jobs:
+  setup_and_run_gis_coarse_meshgen:
+    name: setup_and_run_gis_coarse_meshgen
+    runs-on: ubuntu-latest
+    steps:
+        run: |
+          # create top level working directory
+          mkdir compassDev
+          cd !$
+          root=$PWD
+          
+          # clone the modified compass repo
+          git clone --recursive git@github.com:MPAS-Dev/compass.git
+          
+          # checkout a branch that adds support for mpirun (instead of srun) - See PR
+          https://github.com/MPAS-Dev/compass/pull/890
+          pushd compass
+          git remote add scorec git@github.com:SCOREC/compass.git
+          git fetch scorec
+          git checkout cws/simmetrixMeshGen
+
+          #merge main
+          git merge origin/main
+          
+          # create the compass environment
+          ./conda/configure_compass_env.py --conda $root/mambaForge --mpi mpich
+          
+          # enable the compass environment
+          source load_dev_compass_1.7.0-alpha.1_mpich.sh 
+          
+          # install the meshio package to support writing contours to vtk
+          pip install meshio
+          
+          popd
+
+          # download the input mesh
+          wget https://rpi.app.box.com/public/static/qytr3c49h1xbucxz594df327qatiu8ds.tgz
+          tar xf qytr3c49h1xbucxz594df327qatiu8ds.tgz
+          
+          # create the config file describing the system
+          cat << EOF > system.cfg
+          # This file contains some common config options you might want to set
+          # The paths section describes paths to databases and shared compass environments
+          [paths]
+          database_root =
+          # The parallel section describes options related to running tests in parallel
+          [parallel]
+          # parallel system of execution: slurm or single_node
+          system = single_node
+          # whether to use mpirun or srun to run the model
+          parallel_executable = mpirun
+          # cores per node on the machine, detected automatically by default
+          cores_per_node = 4
+          [mesh]
+          #run quicker - gis takes 20mins on 128 perlmutter cores
+          min_spac = 10.e3
+          [greenland]
+          nprocs = 4
+          data_path = $root/gis4kmSubSampled_01302025
+          measures_filename = greenland_vel_mosaic500_extrap_stride8.nc
+          bedmachine_filename = BedMachineGreenland-v5_edits_floodFill_extrap_stride25.nc
+          EOF
+          
+          # setup the greenland mesh generation test case
+          testDir=$root/gis_mesh_gen
+          compass setup -w $testDir -t landice/greenland/mesh_gen -f system.cfg 
+          
+          # run the test case
+          cd $testDir
+          compass run
+
