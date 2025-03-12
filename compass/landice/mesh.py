@@ -5,6 +5,7 @@ import time
 from shutil import copyfile
 
 import jigsawpy
+import meshio
 import mpas_tools.io
 import numpy as np
 import xarray
@@ -15,8 +16,9 @@ from mpas_tools.mesh.conversion import convert, cull
 from mpas_tools.mesh.creation import build_planar_mesh
 from mpas_tools.mesh.creation.sort_mesh import sort_mesh
 from netCDF4 import Dataset
+from skimage.measure import find_contours
 from scipy.interpolate import NearestNDInterpolator, interpn
-
+from scipy import ndimage
 
 def mpas_flood_fill(seed_mask, grow_mask, cellsOnCell, nEdgesOnCell,
                     grow_iters=sys.maxsize):
@@ -379,6 +381,244 @@ def set_cell_width(self, section_name, thk, bed=None, vx=None, vy=None,
 
     return cell_width
 
+def writeContoursToVtk(contour, file):
+    """Writes a VTK mesh file from the given contour
+       (chain of vertices that form edges)."""
+    def add_zero_z_coord(pt):
+        return np.concatenate((pt, [0]))
+    points = []
+    line_indices = []
+    first_point = 0
+    for i in range(len(contour) - 1):
+        points.append(add_zero_z_coord(contour[i]))
+        line_indices.append([first_point + i, first_point + i + 1])
+    points.append(add_zero_z_coord(contour[-1]))
+    first_point = len(points)
+
+    cells = [("line", line_indices)]
+
+    mesh = meshio.Mesh(points, cells)
+
+    mesh.write(file)
+
+
+def remove_triangles(contour, name, debug=False):
+    """ find sequences of four points where the first
+    and last point are the same and remove the second
+    and third points """
+
+    # assert that there is a loop
+    assert (contour[0] == contour[-1]).all()
+    assert (len(contour) > 4)
+    fn_name = "remove_triangles"
+    tic = time.time()
+    clean = []
+    a = 0
+    b = 1
+    c = 2
+    d = 3
+    clean.append(contour[a])
+    last_idx = len(contour) - 1
+    tri_removed = 0
+    while d <= last_idx:
+        if np.allclose(contour[a], contour[d]):
+            if debug:
+                print("triangle found near pt {:.4E} {:.4E}"
+                      .format(contour[a][0], contour[a][1]))
+            tri_removed += 1
+            # skip middle points
+            a = d
+            b = a + 1
+            c = b + 1
+            d = c + 1
+        else:
+            clean.append(contour[b])
+            a += 1
+            b += 1
+            c += 1
+            d += 1
+    # add the last points
+    while c <= last_idx:
+        clean.append(contour[c])
+        c += 1
+    # close the loop if it isn't already
+    # i.e., if the last edge was removed
+    if not (clean[0] == clean[-1]).all():
+        clean.append(clean[0])
+    toc = time.time()
+    print("{} {} removed {} triangles"
+          .format(fn_name, name, tri_removed))
+    print("{} {} done: {:.2f} seconds\n"
+          .format(fn_name, name, toc - tic))
+    writeContoursToVtk(clean,
+                       "{}PrimaryContourNoTri.vtk".format(name))
+    return clean
+
+def remove_coincident_edges(contour, name, debug=False):
+
+    class Edge:
+        def __init__(self, v0, v1):
+            assert (len(v0) == 2)
+            assert (len(v1) == 2)
+            self.v0 = v0
+            self.v1 = v1
+
+    def are_edges_coincident(e1, e2):
+        assert isinstance(e1, Edge)
+        assert isinstance(e2, Edge)
+        if np.allclose(e1.v0, e2.v0) and np.allclose(e1.v1, e2.v1):
+            return True
+        elif np.allclose(e1.v0, e2.v1) and np.allclose(e1.v1, e2.v0):
+            return True
+        else:
+            return False
+
+    # assert that there is a loop
+    assert (contour[0] == contour[-1]).all()
+    assert (len(contour) > 3)
+    coincident_count = 0
+    fn_name = "remove_coincident_edges"
+    tic = time.time()
+    clean = []
+    left = 0
+    middle = 1
+    right = 2
+    clean.append(contour[left])
+    last_idx = len(contour) - 1
+    while left < last_idx and middle <= last_idx and right <= last_idx:
+        e1 = Edge(contour[left], contour[middle])
+        e2 = Edge(contour[middle], contour[right])
+        if are_edges_coincident(e1, e2):
+            if debug:
+                print("coincident edges found near pt {:.4E} {:.4E}"
+                      "left {} mid {} right {}"
+                      .format(contour[middle][0], contour[middle][1],
+                              left, middle, right))
+            # skip both edges
+            coincident_count += 1
+            left += 2
+            middle += 2
+            right += 2
+        else:
+            clean.append(contour[middle])
+            left += 1
+            middle += 1
+            right += 1
+    # close the loop if it isn't already
+    # i.e., if the last edge was removed
+    if not (clean[0] == clean[-1]).all():
+        clean.append(clean[0])
+    toc = time.time()
+    print("{} {} removed {} edges"
+          .format(fn_name, name, coincident_count))
+    print("{} {} done: {:.2f} seconds\n"
+          .format(fn_name, name, toc - tic))
+    writeContoursToVtk(clean,
+                       "{}PrimaryContourClean.vtk".format(name))
+    return clean
+
+def collapse_small_edges(contour, small, name, debug=False):
+    # assert that there is a loop
+    assert (contour[0] == contour[-1]).all()
+
+    collapsed_count = 0
+    tic = time.time()
+    collapsed = []
+    current = 0
+    next = 1
+    collapsed.append(contour[current])
+    last_idx = len(contour) - 1
+    while current < last_idx and next <= last_idx:
+        pt = contour[current]
+        next_pt = contour[next]
+        dist = np.linalg.norm(pt - next_pt)
+        if dist <= small:
+            if debug:
+                print("pt[{}] {} {} pt[{}] {} {}".
+                      format(current, pt[0], pt[1],
+                             next, next_pt[0], next_pt[1]))
+                print("points are {} apart, which is less than {}".
+                      format(dist, small))
+            next += 1  # advance 'next' for the next evaluation
+            collapsed_count += 1
+        else:
+            collapsed.append(next_pt)
+            current = next
+            next += 1
+    # close the loop if it isn't already
+    # i.e., if the last edge was collapsed
+    if not (collapsed[0] == collapsed[-1]).all():
+        collapsed.append(collapsed[0])
+    toc = time.time()
+    print("collapse_small_edges {} removed {} edges"
+          .format(name, collapsed_count))
+    print("collapse_small_edges {} done: {:.2f} seconds\n"
+          .format(name, toc - tic))
+    writeContoursToVtk(collapsed,
+                       "{}PrimaryContourCollapsed.vtk".format(name))
+    return collapsed
+
+def rho_i():
+    return np.double(910.0)
+
+
+def rho_w():
+    return np.double(1028.0)
+
+def get_phi(thk, topg, x, y):
+    print("get phi start\n")
+    assert (thk.shape == (len(y), len(x)))
+    tic = time.time()
+
+    # Using the grounding line level set
+    # expression 'phi = rho_i * thk + rho_w * topg'
+    # results in a runtime overflow warning as 'topg'
+    # has values around 1e37 near two of the domain
+    # corners (minx,miny) and (maxx,miny).
+    # In those corners the level set distance will be set to
+    # max distance = max(maxx, maxy)
+    max_distance = max(max(x), max(y))
+
+    phi = np.where(not np.allclose(thk, 0) and thk < 0,
+                   max_distance,
+                   rho_i() * thk + rho_w() * topg)
+    toc = time.time()
+    print("get_phi done: {:.2f} seconds\n".format(toc - tic))
+    return phi
+
+def get_ice_surface_height(phi, topg, thk):
+    # upper ice surface height where ice is floating
+    s_floating = (1 - (rho_i() / rho_w())) * thk
+    s_grounded = topg + thk
+    # set the height to s_floating where phi < 0 and s_grounded otherwise
+    s_height = np.where(phi < 0, s_floating, s_grounded)
+    return s_height
+
+
+def transform_max_contour(contours, x, y, name):
+    max_contour = max(contours, key=len)
+    max_contour_len = len(max_contour)
+    print("max sized contour lenth {}\n".format(max_contour_len))
+    # transform the contour points back to the original coordinate system
+    cell_size = x[1] - x[0]  # assumed constant and equal in x and y
+    min_x = np.min(x)
+    min_y = np.min(y)
+    transformed_pts = [(pt * cell_size) + (min_x, min_y) for pt in max_contour]
+    writeContoursToVtk(transformed_pts, "{}Contours.vtk".format(name))
+    return transformed_pts
+
+def extract_contour(field, x, y, name):
+    """ the field is expected to be either 0 or 1 at
+    each grid point """
+
+    assert np.all(v == 0 or v == 1 for v in field)
+    assert (field.shape == (len(y), len(x)))
+    tic = time.time()
+    contours = find_contours(field.T, 0.5)
+    contours_xform = transform_max_contour(contours, x, y, name)
+    toc = time.time()
+    print("{} extract_contour done: {:.2f} seconds\n".format(name, toc - tic))
+    return contours_xform
 
 def get_dist_to_edge_and_gl(self, thk, topg, x, y,
                             section_name, window_size=None):
@@ -596,7 +836,22 @@ def build_cell_width(self, section_name, gridded_dataset,
     thk[flood_mask == 0] = 0.0
     vx[flood_mask == 0] = 0.0
     vy[flood_mask == 0] = 0.0
+    
+    # ADDED CONTOUR CODE
+    phi = get_phi(thk, topg, x1, y1)
+    phi_ff = gridded_flood_fill(phi)
+    gl_contour = extract_contour(phi_ff, x1, y1, "gl")
+    gl_coarsened_contour = collapse_small_edges(gl_contour,
+                                                small=500, name="gl")
+    gl_nocoin_contour = remove_coincident_edges(gl_coarsened_contour,
+                                                name="gl")
+    remove_triangles(gl_nocoin_contour, name="gl")
 
+    s_height = get_ice_surface_height(phi, topg, thk)
+    s_height_ff = gridded_flood_fill(s_height)
+
+    #END OF ADDITION
+    
     # Calculate distance from each grid point to ice edge
     # and grounding line, for use in cell spacing functions.
     distToEdge, distToGL = get_dist_to_edge_and_gl(
