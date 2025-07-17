@@ -190,6 +190,62 @@ def set_rectangular_geom_points_and_edges(xmin, xmax, ymin, ymax):
 
     return geom_points, geom_edges
 
+def append_contour(tag, contour, geom_points, geom_edges):
+    """
+    Combine the Jigsaw lists of points and edges that define the geometric
+    model bounding polygon (``geom_points`` and ``geom_edges``, respectively)
+    with the list of points that define the specified contour
+    (``contour``).
+
+    Parameters
+    ----------
+    tag : integer
+        id assigned to the edges from contour in jigsaw
+
+    contour : np.array
+        array of tuples defining (x,y) coordinates of geometric model vertices
+        points such that (1) edges are defined by adjacent pairs of points
+        starting from the first (i.e.,
+        ``edge 0 = (contour[0],contour[1])``)
+        and (2) the first and last points are the same so that a closed loop
+        is formed.
+
+    geom_points : array, dtype=jigsawpy.jigsaw_msh_t.VERT2_t
+        points defining the bounding polygon of the domain
+
+    geom_edges : array, dtype=jigsawpy.jigsaw_msh_t.EDGE2_t
+        edges defining the bounding polygon of the domain
+
+    Returns
+    -------
+    points : numpy.array, dtype=jigsawpy.jigsaw_msh_t.VERT2_t
+        contains the bounding points from ``geom_points`` followed by the
+        points from ``contour``
+
+    edges : numpy.array, dtype=jigsawpy.jigsaw_msh_t.EDGE2_t
+        contains the edges from ``geom_edges`` followed by ``contour`` using
+        point indices from ``points``
+    """
+
+    # assert that there is a loop
+    assert (contour[0] == contour[-1]).all()
+    geom_points_notag = []
+    for pt in geom_points:
+        geom_points_notag.append(pt[0])
+    points_ar = np.concatenate((geom_points_notag, contour))
+
+    first_gl_pt = +4
+    last_gl_pt = first_gl_pt + len(contour[:-1])
+    indices = [i for i in range(first_gl_pt, last_gl_pt)]
+    indices.append(first_gl_pt)
+    gl_edges = list(zip(indices[:-1], indices[1:]))
+    geom_edges_notag = []
+    for pt in geom_edges:
+        geom_edges_notag.append(pt[0])
+    edges_ar = np.concatenate((geom_edges_notag, gl_edges))
+
+    return points_ar, edges_ar
+
 
 def set_cell_width(self, section_name, thk, bed=None, vx=None, vy=None,
                    dist_to_edge=None, dist_to_grounding_line=None,
@@ -400,6 +456,22 @@ def writeContoursToVtk(contour, file):
     mesh = meshio.Mesh(points, cells)
 
     mesh.write(file)
+
+def writeToVtk(points, edges, file):
+    """Writes a VTK mesh file from the given contour
+       (points and edges)."""
+    def add_zero_z_coord(pt):
+        return np.concatenate((pt, [0]))
+    points_z = []
+    for pt in points:
+        points_z.append(add_zero_z_coord(pt))
+
+    cells = [("line", edges)]
+
+    mesh = meshio.Mesh(points_z, cells)
+
+    mesh.write(file)
+
 
 
 def remove_triangles(contour, name, debug=False):
@@ -837,7 +909,6 @@ def build_cell_width(self, section_name, gridded_dataset,
     vx[flood_mask == 0] = 0.0
     vy[flood_mask == 0] = 0.0
     
-    # ADDED CONTOUR CODE
     phi = get_phi(thk, topg, x1, y1)
     phi_ff = gridded_flood_fill(phi)
     gl_contour = extract_contour(phi_ff, x1, y1, "gl")
@@ -845,12 +916,14 @@ def build_cell_width(self, section_name, gridded_dataset,
                                                 small=500, name="gl")
     gl_nocoin_contour = remove_coincident_edges(gl_coarsened_contour,
                                                 name="gl")
-    remove_triangles(gl_nocoin_contour, name="gl")
+    gl_notri_contour = remove_triangles(gl_nocoin_contour, name="gl")
 
     s_height = get_ice_surface_height(phi, topg, thk)
     s_height_ff = gridded_flood_fill(s_height)
 
-    #END OF ADDITION
+    all_points, all_edges = append_contour(3, gl_notri_contour,
+                                           geom_points, geom_edges)
+    writeToVtk(all_points, all_edges, "gl_wBbox.vtk")
     
     # Calculate distance from each grid point to ice edge
     # and grounding line, for use in cell spacing functions.
