@@ -470,7 +470,7 @@ def writeToVtk(points, edges, file):
 
     mesh = meshio.Mesh(points_z, cells)
 
-    mesh.write(file)
+    mesh.write(file, binary=False)
 
 
 
