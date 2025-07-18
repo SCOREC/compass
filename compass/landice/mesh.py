@@ -457,22 +457,22 @@ def writeContoursToVtk(contour, file):
 
     mesh.write(file)
 
-def writeToVtk(points, edges, file):
+def writeToVtk(points, edges, filename):
     """Writes a VTK mesh file from the given contour
        (points and edges)."""
-    def add_zero_z_coord(pt):
-        return np.concatenate((pt, [0]))
-    points_z = []
-    for pt in points:
-        points_z.append(add_zero_z_coord(pt))
+    lines = ['# vtk DataFile Version 3.0\n',
+             f'{filename} written by compass/landice/mesh.py\n',
+             'ASCII\n',
+             'DATASET POLYDATA\n\n',
+             f'POINTS {len(points[:-1])} float\n']
 
-    cells = [("line", edges)]
-
-    mesh = meshio.Mesh(points_z, cells)
-
-    mesh.write(file, binary=False)
-
-
+    for pt in points[:-1]:
+        lines.append(f'{pt[0]} {pt[1]} 0.0\n')
+    lines.append(f'\nLINES {len(edges)} {len(edges)*3}\n')
+    for edge in edges:
+        lines.append(f'2 {edge[0]} {edge[1]}\n')
+    with open(filename, "w") as f:
+        f.writelines(lines)
 
 def remove_triangles(contour, name, debug=False):
     """ find sequences of four points where the first
