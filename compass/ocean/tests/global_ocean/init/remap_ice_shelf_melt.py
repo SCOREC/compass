@@ -1,3 +1,6 @@
+import os
+import subprocess
+
 import h5py
 import numpy as np
 import pyproj
@@ -84,17 +87,20 @@ class RemapIceShelfMelt(Step):
         map_culled_to_base_filename = 'map_culled_to_base.nc'
         mesh_name = self.mesh.mesh_name
 
+        convert_to_cdf5 = config.getboolean(
+            'files_for_e3sm', 'convert_to_cdf5')
+
         remap_paolo(
             in_filename, base_mesh_filename, culled_mesh_filename,
             mesh_name, land_ice_mask_filename, out_filename,
-            logger=logger, mpi_tasks=ntasks,
+            logger=logger, convert_to_cdf5=convert_to_cdf5, mpi_tasks=ntasks,
             parallel_executable=parallel_executable,
             map_culled_to_base_filename=map_culled_to_base_filename)
 
 
 def remap_paolo(in_filename, base_mesh_filename, culled_mesh_filename,
                 mesh_name, land_ice_mask_filename, out_filename, logger,
-                mapping_directory='.', method='conserve',
+                convert_to_cdf5, mapping_directory='.', method='conserve',
                 renormalization_threshold=None, mpi_tasks=1,
                 parallel_executable=None,
                 map_culled_to_base_filename=None):
@@ -126,6 +132,9 @@ def remap_paolo(in_filename, base_mesh_filename, culled_mesh_filename,
 
     logger : logging.Logger
         A logger for output from the step
+
+    convert_to_cdf5 : bool
+        Whether to convert the input file to CDF5 format
 
     mapping_directory : str
         The directory where the mapping file should be stored (if it is to be
@@ -172,7 +181,7 @@ def remap_paolo(in_filename, base_mesh_filename, culled_mesh_filename,
 
     logger.info('Creating the source grid descriptor...')
     in_descriptor = ProjectionGridDescriptor.create(
-        projection=projection, x=x.values, y=y.values, meshName=in_grid_name)
+        projection=projection, x=x.values, y=y.values, mesh_name=in_grid_name)
     logger.info('done.')
 
     out_descriptor = MpasCellMeshDescriptor(base_mesh_filename, mesh_name)
@@ -181,16 +190,22 @@ def remap_paolo(in_filename, base_mesh_filename, culled_mesh_filename,
         f'{mapping_directory}/map_{in_grid_name}_to_{mesh_name}_base.nc'
 
     logger.info(f'Creating the mapping file {mapping_filename}...')
-    remapper = Remapper(in_descriptor, out_descriptor, mapping_filename)
 
-    remapper.build_mapping_file(method=method, mpiTasks=mpi_tasks,
-                                tempdir=mapping_directory, logger=logger,
-                                esmf_parallel_exec=parallel_executable,
-                                include_logs=True)
+    remapper = Remapper(
+        ntasks=mpi_tasks,
+        map_filename=mapping_filename,
+        method=method,
+        src_descriptor=in_descriptor,
+        dst_descriptor=out_descriptor,
+        parallel_exec=parallel_executable,
+    )
+
+    remapper.build_map(logger=logger)
+
     logger.info('done.')
 
-    dx = np.abs(in_descriptor.xCorner[1:] - in_descriptor.xCorner[:-1])
-    dy = np.abs(in_descriptor.yCorner[1:] - in_descriptor.yCorner[:-1])
+    dx = np.abs(in_descriptor.x_corner[1:] - in_descriptor.x_corner[:-1])
+    dy = np.abs(in_descriptor.y_corner[1:] - in_descriptor.y_corner[:-1])
     dx, dy = np.meshgrid(dx, dy)
     planar_area = xr.DataArray(dims=('y', 'x'), data=dx * dy)
 
@@ -235,15 +250,15 @@ def remap_paolo(in_filename, base_mesh_filename, culled_mesh_filename,
     sphere_flux = (ds.dataLandIceFreshwaterFlux * sphere_area).sum().values
     heat_flux = (ds.dataLandIceHeatFlux * sphere_area).sum().values
 
-    logger.info(f'Area of a cell (m^2):             {planar_area[0,0]:.1f}')
+    logger.info(f'Area of a cell (m^2):             {planar_area[0, 0]:.1f}')
     logger.info(f'Total flux on plane (kg/s):       {planar_flux:.1f}')
     logger.info(f'Total flux on sphere (kg/s):      {sphere_flux:.1f}')
     logger.info(f'Total heat flux on sphere (W):    {heat_flux:.1f}')
     logger.info('')
 
     logger.info('Remapping...')
-    ds_remap = remapper.remap(
-        ds, renormalizationThreshold=renormalization_threshold)
+    ds_remap = remapper.remap_numpy(
+        ds, renormalization_threshold=renormalization_threshold)
     logger.info('done.')
     logger.info('')
 
@@ -282,7 +297,8 @@ def remap_paolo(in_filename, base_mesh_filename, culled_mesh_filename,
     _land_ice_mask_on_base_mesh(
         base_mesh_filename=base_mesh_filename,
         land_ice_mask_filename=land_ice_mask_filename,
-        map_culled_to_base_filename=map_culled_to_base_filename)
+        map_culled_to_base_filename=map_culled_to_base_filename,
+        convert_to_cdf5=convert_to_cdf5)
 
     ds_mask = xr.open_dataset('land_ice_mask_on_base.nc')
     mask = ds_mask.landIceFloatingMask
@@ -292,13 +308,14 @@ def remap_paolo(in_filename, base_mesh_filename, culled_mesh_filename,
     write_netcdf(ds_remap, 'ismf_remapped_to_base.nc')
 
     # deal with melting beyond the land-ice mask
-    _reroute_missing_flux(base_mesh_filename, map_culled_to_base_filename,
-                          out_filename, logger)
+    _reroute_missing_flux(
+        base_mesh_filename, map_culled_to_base_filename, out_filename, logger,
+        convert_to_cdf5)
 
 
 def remap_adusumilli(in_filename, base_mesh_filename, culled_mesh_filename,
                      mesh_name, land_ice_mask_filename, out_filename, logger,
-                     mapping_directory='.', method='conserve',
+                     convert_to_cdf5, mapping_directory='.', method='conserve',
                      renormalization_threshold=None, mpi_tasks=1,
                      parallel_executable=None,
                      map_culled_to_base_filename=None):
@@ -330,6 +347,9 @@ def remap_adusumilli(in_filename, base_mesh_filename, culled_mesh_filename,
 
     logger : logging.Logger
         A logger for output from the step
+
+    convert_to_cdf5 : bool
+        Whether to convert the input file to CDF5 format
 
     mapping_directory : str
         The directory where the mapping file should be stored (if it is to be
@@ -374,7 +394,7 @@ def remap_adusumilli(in_filename, base_mesh_filename, culled_mesh_filename,
 
     logger.info('Creating the source grid descriptor...')
     in_descriptor = ProjectionGridDescriptor.create(
-        projection=projection, x=x, y=y, meshName=in_grid_name)
+        projection=projection, x=x, y=y, mesh_name=in_grid_name)
     logger.info('done.')
 
     logger.info('Creating the source xarray dataset...')
@@ -405,35 +425,45 @@ def remap_adusumilli(in_filename, base_mesh_filename, culled_mesh_filename,
         f'{mapping_directory}/map_{in_grid_name}_to_{mesh_name}_base.nc'
 
     logger.info(f'Creating the mapping file {mapping_filename}...')
-    remapper = Remapper(in_descriptor, out_descriptor, mapping_filename)
 
-    remapper.build_mapping_file(method=method, mpiTasks=mpi_tasks,
-                                tempdir=mapping_directory, logger=logger,
-                                esmf_parallel_exec=parallel_executable)
+    remapper = Remapper(
+        ntasks=mpi_tasks,
+        map_filename=mapping_filename,
+        method=method,
+        src_descriptor=in_descriptor,
+        dst_descriptor=out_descriptor,
+        parallel_exec=parallel_executable,
+    )
+
+    remapper.build_map(logger=logger)
+
     logger.info('done.')
 
     logger.info('Remapping...')
-    ds_remap = remapper.remap(
-        ds, renormalizationThreshold=renormalization_threshold)
+    ds_remap = remapper.remap_numpy(
+        ds, renormalization_threshold=renormalization_threshold)
     logger.info('done.')
 
     if map_culled_to_base_filename is None:
         map_culled_to_base_filename = 'map_culled_to_base.nc'
-        write_map_culled_to_base(base_mesh_filename=base_mesh_filename,
-                                 culled_mesh_filename=culled_mesh_filename,
-                                 out_filename=map_culled_to_base_filename)
+        write_map_culled_to_base(
+            base_mesh_filename=base_mesh_filename,
+            culled_mesh_filename=culled_mesh_filename,
+            out_filename=map_culled_to_base_filename,
+            convert_to_cdf5=convert_to_cdf5)
 
     _land_ice_mask_on_base_mesh(
         base_mesh_filename=base_mesh_filename,
         land_ice_mask_filename=land_ice_mask_filename,
-        map_culled_to_base_filename=map_culled_to_base_filename)
+        map_culled_to_base_filename=map_culled_to_base_filename,
+        convert_to_cdf5=convert_to_cdf5)
 
     ds_mask = xr.open_dataset('land_ice_mask_on_base.nc')
     mask = ds_mask.landIceFloatingMask
     ds_remap['landIceFloatingMask'] = mask
     ds_remap.attrs.pop('history')
 
-    write_netcdf(ds_remap, 'ismf_remapped_to_base.nc')
+    _write_netcdf(ds_remap, 'ismf_remapped_to_base.nc', convert_to_cdf5)
 
     # deal with melting beyond the land-ice mask
     _reroute_missing_flux(base_mesh_filename, map_culled_to_base_filename,
@@ -441,7 +471,7 @@ def remap_adusumilli(in_filename, base_mesh_filename, culled_mesh_filename,
 
 
 def _land_ice_mask_on_base_mesh(base_mesh_filename, land_ice_mask_filename,
-                                map_culled_to_base_filename):
+                                map_culled_to_base_filename, convert_to_cdf5):
     """ Map the land-ice mask back to the base mesh """
 
     ds_map = xr.open_dataset(map_culled_to_base_filename)
@@ -457,11 +487,11 @@ def _land_ice_mask_on_base_mesh(base_mesh_filename, land_ice_mask_filename,
     ds_base_mask = xr.Dataset()
     ds_base_mask['landIceFloatingMask'] = ('nCells', base_land_ice_mask)
 
-    write_netcdf(ds_base_mask, 'land_ice_mask_on_base.nc')
+    _write_netcdf(ds_base_mask, 'land_ice_mask_on_base.nc', convert_to_cdf5)
 
 
 def _reroute_missing_flux(base_mesh_filename, map_culled_to_base_filename,
-                          out_filename, logger):
+                          out_filename, logger, convert_to_cdf5):
     """
     For each flux cell not within an ice shelf, find the closest ice-shelf cell
     """
@@ -501,7 +531,7 @@ def _reroute_missing_flux(base_mesh_filename, map_culled_to_base_filename,
     logger.info(f'Total flux (kg/s):                {fwf_total:.1f}')
     ds_to_route = xr.Dataset()
     ds_to_route['rerouteMask'] = reroute_mask
-    write_netcdf(ds_to_route, 'route_mask.nc')
+    _write_netcdf(ds_to_route, 'route_mask.nc', convert_to_cdf5)
 
     reroute_xyz = base_xyz[fluxes_to_reroute.values, :]
 
@@ -535,9 +565,28 @@ def _reroute_missing_flux(base_mesh_filename, map_culled_to_base_filename,
     ds_out[field] = ('nCells', hf_rerouted)
     ds_out[field] = ds_out[field].expand_dims(dim='Time', axis=0)
     ds_out[field].attrs['units'] = 'W m^-2'
-    write_netcdf(ds_out, out_filename)
+    _write_netcdf(ds_out, out_filename, convert_to_cdf5)
 
     fwf_total = (ds_out.dataLandIceFreshwaterFlux *
                  area.isel(nCells=map_culled_to_base)).sum().values
     logger.info(f'Total after rerouting (kg/s):     {fwf_total:.1f}')
     logger.info('')
+
+
+def _write_netcdf(ds, filename, convert_to_cdf5, **kwargs):
+    """
+    Write an xarray dataset to a NetCDF file, possibly converting to CDF5
+    format
+    """
+
+    if convert_to_cdf5:
+        name, ext = os.path.splitext(filename)
+        write_filename = f'{name}_before_cdf5{ext}'
+    else:
+        write_filename = filename
+
+    write_netcdf(ds, write_filename, **kwargs)
+
+    if convert_to_cdf5:
+        args = ['ncks', '-O', '-5', write_filename, filename]
+        subprocess.check_call(args)

@@ -12,6 +12,7 @@ on:
 env:
   CANCEL_OTHERS: false
   PATHS_IGNORE: '["**/README.md", "**/docs/**"]'
+  PYTHON_VERSION: "3.13"
 
 jobs:
   pre-commit-hooks:
@@ -27,18 +28,20 @@ jobs:
 
       - if: ${{ steps.skip_check.outputs.should_skip != 'true' }}
         name: Checkout Code Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - if: ${{ steps.skip_check.outputs.should_skip != 'true' }}
-        name: Set up Python 3.10
-        uses: actions/setup-python@v5
+        name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v6
         with:
-          python-version: "3.10"
+          python-version: ${{ env.PYTHON_VERSION }}
+
       - if: ${{ steps.skip_check.outputs.should_skip != 'true' }}
         id: file_changes
-        uses: trilom/file-changes-action@v1.2.4
+        uses: trilom/file-changes-action@1.2.4
         with:
           output: ' '
+
       - if: ${{ steps.skip_check.outputs.should_skip != 'true' }}
         # Run all pre-commit hooks on all the files.
         # Getting only staged files can be tricky in case a new PR is opened
@@ -57,7 +60,8 @@ jobs:
         shell: bash -l {0}
     strategy:
       matrix:
-        python-version: ["3.9", "3.10", "3.11", "3.12"]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+      fail-fast: false
     steps:
       - id: skip_check
         uses: fkirc/skip-duplicate-actions@master
@@ -66,30 +70,21 @@ jobs:
           paths_ignore: ${{ env.PATHS_IGNORE }}
 
       - if: ${{ steps.skip_check.outputs.should_skip != 'true' }}
-        uses: actions/checkout@v4
-
-      - if: ${{ steps.skip_check.outputs.should_skip != 'true' }}
-        name: Cache Conda
-        uses: actions/cache@v4
-        env:
-          # Increase this value to reset cache if conda-dev-spec.template has not changed in the workflow
-          CACHE_NUMBER: 0
-        with:
-          path: ~/conda_pkgs_dir
-          key:
-            ${{ runner.os }}-${{ matrix.python-version }}-conda-${{ env.CACHE_NUMBER }}-${{
-            hashFiles('conda/configure_compass_env.py,conda/*,conda/compass_env/*') }}
+        uses: actions/checkout@v6
 
       - if: ${{ steps.skip_check.outputs.should_skip != 'true' }}
         name: Set up Conda Environment
-        uses: conda-incubator/setup-miniconda@v3
+        uses: mamba-org/setup-micromamba@v2
         with:
-          activate-environment: "compass_ci"
-          miniforge-version: latest
-          channels: conda-forge,e3sm/label/compass
-          channel-priority: strict
-          auto-update-conda: true
-          python-version: ${{ matrix.python-version }}
+          environment-name: compass_test
+          init-shell: bash
+          condarc: |
+            channel_priority: strict
+            channels:
+                - conda-forge
+                - e3sm/label/compass
+          create-args: >-
+            python=${{ matrix.python-version }}
 
       - if: ${{ steps.skip_check.outputs.should_skip != 'true' }}
         name: Install compass

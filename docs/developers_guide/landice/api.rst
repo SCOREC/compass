@@ -222,6 +222,7 @@ greenland
    run_model.RunModel.run
 
    mesh.Mesh
+   mesh.Mesh.setup
    mesh.Mesh.run
 
    mesh_gen.MeshGen
@@ -449,6 +450,31 @@ mismipplus
    tasks.exact_cell_count
    tasks.approx_cell_count 
 
+slm
+~~~
+
+.. currentmodule:: compass.landice.tests.slm
+
+.. autosummary::
+   :toctree: generated/
+
+   Slm
+
+   circ_icesheet.CircIcesheetTest
+   circ_icesheet.CircIcesheetTest.configure
+
+   circ_icesheet.run_model.RunModel
+   circ_icesheet.run_model.RunModel.setup
+   circ_icesheet.run_model.RunModel.run
+
+   circ_icesheet.setup_mesh.SetupMesh
+   circ_icesheet.setup_mesh.SetupMesh.run
+
+   circ_icesheet.visualize.Visualize
+   circ_icesheet.visualize.Visualize.setup
+   circ_icesheet.visualize.Visualize.run
+   circ_icesheet.visualize.visualize_slm_circsheet
+
 thwaites
 ~~~~~~~~
 
@@ -491,6 +517,7 @@ Landice Framework
 
    mesh.add_bedmachine_thk_to_ais_gridded_data
    mesh.clean_up_after_interp
+   mesh.clip_mesh_to_bounding_box
    mesh.gridded_flood_fill
    mesh.interp_gridded2mali
    mesh.mpas_flood_fill

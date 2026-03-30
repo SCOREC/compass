@@ -19,10 +19,15 @@ dataset.
 combine
 ~~~~~~~
 The class :py:class:`compass.ocean.tests.utility.combine_topo.Combine`
-defines a step for combining the datasets above.  The GEBCO data is downsampled
-to a 1/80 degree latitude-longitude grid to make later remapping to MPAS meshes
-more manageable.  The BedMachine data is remapped to this same mesh and the
-two datasets are blended between 60 and 62 degrees south latitude.
+defines a step for combining the datasets above. The GEBCO and BedMachine data
+are remapped to a common global grid to make later remapping to MPAS meshes
+more manageable, and the two datasets are blended between 60 and 62 degrees
+south latitude. The GEBCO global dataset is divided into regional tiles prior
+to remapping to improve performance. Two common global target grid options are
+provided: a 1/80 degree latitude-longitude grid and an ne3000 cubed sphere
+grid. These target grid options are selectable via the ``target_grid`` argument
+in the :py:class:`compass.ocean.tests.utility.combine_topo.CombineTopo` test
+case class.
 
 cull_restarts
 -------------
@@ -114,3 +119,38 @@ avoid this problem, we perform extrapolation in 4 steps.
 
 The resulting file is ready to be placed in compass' initial condition database
 (see :ref:`dev_step_input_download` for details on databases).
+
+create_salin_restoring
+----------------------
+The class :py:class:`compass.ocean.tests.utility.create_salin_restoring.CreateSalinRestoring`
+defines a test case for creating a monthly average sea surface salinity dataset based on the
+`WOA 2023 <https://www.ncei.noaa.gov/products/world-ocean-atlas>`_ data.  It also extrapolates
+the twelve months of data into ice-shelf cavities and across continents.
+
+combine
+~~~~~~~
+
+The class :py:class:`compass.ocean.tests.utility.create_salin_restoring.Combine`
+defines a step to download and combine January through December sea surface salinity into a single
+file that serves as the base dataset for salinity restoring in forced ocean sea-ice cases (FOSI).
+The surface level of WOA 2023 data is utilized.
+
+The reference date for each month of data is assumed to be the 15th of each month.  In a simulation,
+this implies that for a model start time of January 1, the salinity is restored to the average of
+the December and January sea surface salinities.
+
+extrap
+~~~~~~
+
+The class :py:class:`compass.ocean.tests.utility.create_salin_restoring.Extrap`
+defines a step to extrapolate the combined January through December sea surface salinities
+into missing ocean regions such as ice-shelf cavities and across continents.  Since this is only
+extrapolation of surface values, masks are not utilized.
+
+remap
+~~~~~
+
+The class :py:class:`compass.ocean.tests.utility.create_salin_restoring.Remap`
+defines a step to remap the extrapolated data to a cubed-sphere grid at ne300
+(~10 km) resolution. The cubed-sphere grid is much more favorable to remapping
+to MPAS meshes, particularly at the poles and with significant smoothing.
