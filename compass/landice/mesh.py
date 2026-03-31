@@ -522,11 +522,18 @@ def writeContoursToVtk(contour, file):
     points.append(add_zero_z_coord(contour[-1]))
     first_point = len(points)
 
-    cells = [("line", line_indices)]
-
-    mesh = meshio.Mesh(points, cells)
-
-    mesh.write(file)
+    # Manually write legacy VTK polydata file in ASCII format
+    with open(file, 'w') as f:
+        f.write('# vtk DataFile Version 2.0\n')
+        f.write('Contour\n')
+        f.write('ASCII\n')
+        f.write('DATASET POLYDATA\n')
+        f.write(f'POINTS {len(points)} float\n')
+        for pt in points:
+            f.write(f'{pt[0]} {pt[1]} {pt[2]}\n')
+        f.write(f'LINES {len(line_indices)} {len(line_indices)*3}\n')
+        for line in line_indices:
+            f.write(f'2 {line[0]} {line[1]}\n')
 
 
 def remove_triangles(contour, name, debug=False):
