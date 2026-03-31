@@ -24,7 +24,6 @@ install_requires = \
      'gsw',
      'h5py',
      'ipython',
-     'jigsawpy',
      'jupyter',
      'lxml',
      'matplotlib',
@@ -51,7 +50,8 @@ os.chdir(here)
 data_files = package_files('compass',
                            prefixes=['namelist', 'streams', 'README'],
                            extensions=['cfg', 'csv', 'template', 'json',
-                                       'txt', 'geojson', 'mat', 'nml'])
+                                       'txt', 'geojson', 'mat', 'nml',
+                                       'yaml'])
 
 setup(name='compass',
       version=version,
@@ -73,7 +73,6 @@ setup(name='compass',
           'Intended Audience :: Science/Research',
           'Programming Language :: Python',
           'Programming Language :: Python :: 3',
-          'Programming Language :: Python :: 3.9',
           'Programming Language :: Python :: 3.10',
           'Programming Language :: Python :: 3.11',
           'Programming Language :: Python :: 3.12',

@@ -1,58 +1,45 @@
-name: CI/CD Build Workflow
+name: GIS Coarse Mesh Generation
 
 on:
-  push:
-    branches: [cws/simmetrixMeshGen]
   pull_request:
-    branches: [cws/simmetrixMeshGen]
-  schedule:
-   - cron: "0 9 * * *"  #daily at 9am
+    branches: [main]
+    paths:
+    - compass/landice/mesh.py
+    - compass/landice/tests/greenland/mesh.py
+    - .github/workflows/gis_coarse_meshgen.yml
+
+  # Allow manual triggering of the workflow
+  workflow_dispatch:
 
 jobs:
-  setup_and_run_job:
-    name: setup_and_run_job
+  gis-coarse-meshgen:
+    name: GIS Coarse Mesh Generation
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          path: compass
       - name: setup_and_run_step
         run: |
           # create top level working directory
-          mkdir compassDev
-          cd $_
           root=$PWD
-          
-          # clone the modified compass repo
-          git clone https://github.com/MPAS-Dev/compass.git
           pushd compass
 
-          # use https for submodules - runner cannot use git protocol
-          sed -i 's!git@github.com:!https://github.com/!g' .gitmodules
-
-          # clone submodules
-          git submodule update --init
-          
-          # checkout the working branch
-          git remote add scorec https://github.com/SCOREC/compass.git
-          git fetch scorec
-          git checkout cws/simmetrixMeshGen
-
-          #merge main
-          git merge origin/main
-          
           # create the compass environment
-          ./conda/configure_compass_env.py --conda $root/mambaForge --mpi mpich
-          
+          ./conda/configure_compass_env.py --conda $root/mambaForge --env_name compass_test --mpi mpich
+
           # enable the compass environment
-          source load_dev_compass_1.7.0-alpha.1_mpich.sh
-          
-          # install the meshio package to support writing contours to vtk
-          pip install meshio
-          
+          source load_compass_test_mpich.sh
+
           popd
 
-          # download the input mesh
-          wget https://rpi.app.box.com/public/static/qytr3c49h1xbucxz594df327qatiu8ds.tgz
-          tar xf qytr3c49h1xbucxz594df327qatiu8ds.tgz
-          
+          # download the input GIS coarse mesh
+          tarball=gis4kmSubSampled_01302025.tgz
+          url=https://web.lcrc.anl.gov/public/e3sm/mpas_standalonedata/mpas-albany-landice/
+          wget ${url}/${tarball}
+          tar xf ${tarball}
+
           # create the config file describing the system
           cat << EOF > system.cfg
           # This file contains some common config options you might want to set
@@ -76,11 +63,11 @@ jobs:
           measures_filename = greenland_vel_mosaic500_extrap_stride8.nc
           bedmachine_filename = BedMachineGreenland-v5_edits_floodFill_extrap_stride25.nc
           EOF
-          
+
           # setup the greenland mesh generation test case
           testDir=$root/gis_mesh_gen
           compass setup -w $testDir -t landice/greenland/mesh_gen -f system.cfg
-          
+
           # run the test case
           cd $testDir
           compass run

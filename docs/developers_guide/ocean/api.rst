@@ -284,6 +284,10 @@ test cases and steps
    mesh.Mesh.configure
    mesh.Mesh.run
 
+   mesh.remap_mali_topography.RemapMaliTopography
+   mesh.remap_mali_topography.RemapMaliTopography.setup
+   mesh.remap_mali_topography.RemapMaliTopography.run
+
    mesh.ec30to60.EC30to60BaseMesh
    mesh.ec30to60.EC30to60BaseMesh.build_cell_width_lat_lon
 
@@ -1042,7 +1046,9 @@ ocean framework
 
    haney.compute_haney_number
 
-   iceshelf.compute_land_ice_pressure_and_draft
+   iceshelf.compute_land_ice_draft_from_pressure
+   iceshelf.compute_land_ice_pressure_from_draft
+   iceshelf.compute_land_ice_pressure_from_thickness
    iceshelf.adjust_ssh
 
    particles.write

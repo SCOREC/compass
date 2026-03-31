@@ -8,6 +8,7 @@ from mpas_tools.io import write_netcdf
 from mpas_tools.logging import check_call
 from pyremap import MpasCellMeshDescriptor
 
+from compass.io import symlink
 from compass.parallel import run_command
 from compass.step import Step
 
@@ -24,11 +25,21 @@ class RemapTopography(Step):
 
     mesh_name : str
         The name of the MPAS mesh to include in the mapping file
+
+    smoothing : bool, optional
+        Whether smoothing will be applied as part of the remapping
+
+    unsmoothed_topo : compass.ocean.mesh.remap_topography.RemapTopography
+        A step with unsmoothed topography
+
+    symlinked_to_unsmoothed : bool
+        Whether we have symlinked to the unsmoothed topography because this
+        is a smoothing step but no smoothing is actually needed
     """
 
     def __init__(
         self, test_case, base_mesh_step, name='remap_topography', subdir=None,
-        mesh_name='MPAS_mesh',
+        mesh_name='MPAS_mesh', smoothing=False, unsmoothed_topo=None
     ):
         """
         Create a new step
@@ -49,11 +60,20 @@ class RemapTopography(Step):
 
         mesh_name : str, optional
             The name of the MPAS mesh to include in the mapping file
-        """
+
+        smoothing : bool, optional
+            Whether smoothing will be applied as part of the remapping
+
+        unsmoothed_topo : compass.ocean.mesh.remap_topography.RemapTopography, optional
+            A step with unsmoothed topography
+        """  # noqa: E501
         super().__init__(test_case, name=name, subdir=subdir,
                          ntasks=None, min_tasks=None)
         self.base_mesh_step = base_mesh_step
         self.mesh_name = mesh_name
+        self.smoothing = smoothing
+        self.unsmoothed_topo = unsmoothed_topo
+        self.symlinked_to_unsmoothed = False
 
         self.add_output_file(filename='topography_remapped.nc')
 
@@ -108,6 +128,12 @@ class RemapTopography(Step):
         """
         Run this step of the test case
         """
+        super().run()
+        self._symlink_unsmoothed()
+        if self.symlinked_to_unsmoothed:
+            # we symlinked to the unsmoothed topography and we're done!
+            return
+
         config = self.config
         weight_generator = config.get('remap_topography', 'weight_generator')
 
@@ -124,6 +150,33 @@ class RemapTopography(Step):
         self._remap_to_target()
         self._modify_remapped_bathymetry()
 
+    def _symlink_unsmoothed(self):
+        """
+        If we are smoothing but no smoothing was actually requested, symlink
+        to the unsmoothed topography
+        """
+        self.symlinked_to_unsmoothed = False
+        if not self.smoothing or self.unsmoothed_topo is None:
+            # there's no unsmoothed topogrpahy yet
+            return
+
+        config = self.config
+        section = config['remap_topography']
+        expand_distance = section.getfloat('expand_distance')
+        expand_factor = section.getfloat('expand_factor')
+
+        if expand_distance != 0. or expand_factor != 1.:
+            # we're doing some smoothing!
+            return
+
+        self.symlinked_to_unsmoothed = True
+        # we already have unsmoothed topography and we're not doing
+        # smoothing so we can just symlink the unsmoothed results
+        out_filename = 'topography_remapped.nc'
+        unsmoothed_path = self.unsmoothed_topo.work_dir
+        target = os.path.join(unsmoothed_path, out_filename)
+        symlink(target, out_filename)
+
     def _create_target_scrip_file(self):
         """
         Create target SCRIP file from MPAS mesh file.
@@ -131,19 +184,23 @@ class RemapTopography(Step):
         logger = self.logger
         logger.info('Create source SCRIP file')
 
-        config = self.config
-        section = config['remap_topography']
-        expandDist = section.getfloat('expandDist')
-        expandFactor = section.getfloat('expandFactor')
+        if self.smoothing:
+            config = self.config
+            section = config['remap_topography']
+            expand_distance = section.getfloat('expand_distance')
+            expand_factor = section.getfloat('expand_factor')
+        else:
+            expand_distance = 0.
+            expand_factor = 1.
 
         descriptor = MpasCellMeshDescriptor(
-            fileName='base_mesh.nc',
-            meshName=self.mesh_name,
+            filename='base_mesh.nc',
+            mesh_name=self.mesh_name,
         )
         descriptor.to_scrip(
             'target.scrip.nc',
-            expandDist=expandDist,
-            expandFactor=expandFactor,
+            expand_dist=expand_distance,
+            expand_factor=expand_factor,
         )
 
         logger.info('  Done.')
@@ -165,7 +222,8 @@ class RemapTopography(Step):
             in_filename,
             h5m_filename,
         ]
-        check_call(args, logger)
+        # run in "parallel" with one task and one thread for Intel-MPI support
+        run_command(args, 1, 1, 1, self.config, logger)
 
         # Partition source SCRIP
         args = [
@@ -174,7 +232,8 @@ class RemapTopography(Step):
             h5m_filename,
             part_filename,
         ]
-        check_call(args, logger)
+        # run in "parallel" with one task and one thread for Intel-MPI support
+        run_command(args, 1, 1, 1, self.config, logger)
 
         logger.info('  Done.')
 

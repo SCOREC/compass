@@ -36,7 +36,7 @@ controlled by the following config options:
                   Antarctica v3 around Antarctica.
 
     # the target and minimum number of MPI tasks to use in remapping
-    ntasks = 1280
+    ntasks = 640
     min_tasks = 256
 
     # remapping method {'bilinear', 'neareststod', 'conserve'}
@@ -50,12 +50,10 @@ controlled by the following config options:
     # the density of land ice from MALI (kg/m^3)
     ice_density = 910.0
 
-    # smoothing parameters
-    # no smoothing (required for esmf):
-    #     expandDist = 0   [m]
-    #     expandFactor = 1 [cell fraction]
-    expandDist = 0
-    expandFactor = 1
+    # smoothing parameters (no smoothing by default)
+    expand_distance = 0
+    expand_factor = 1
+
 
 The topography and source SCRIP filenames should be something from the ocean
 `bathymetry database <https://web.lcrc.anl.gov/public/e3sm/mpas_standalonedata/mpas-ocean/bathymetry_database/>`_.
@@ -98,6 +96,15 @@ are the following:
 
 The ne120 topography dataset has a resolution of ~25 km (sufficient for MPAS
 meshes with 240 km resolution) and requires far fewer processers to remap.
+
+The ``expand_distance`` and ``expand_factor`` options are used to smooth the
+topography.  The ``expand_distance`` is the distance (in meters) over which
+the smoothing is applied, while the ``expand_factor`` specifies a factor
+by which each MPAS cell is expanded for smoothing.  The default is no
+smoothing (``expand_distance = 0`` and ``expand_factor = 1``).  In this case,
+there will still be a step called ``remap_topo_smoothed`` in addition to
+``remap_topo_unsmoothed`` but the smoothed step will just make a symlink to the
+unsmoothed topography.
 
 Culling land cells
 ------------------

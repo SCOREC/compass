@@ -366,7 +366,11 @@ def build_jigsaw(activate_env, source_path, env_path, logger):
     commands = \
         f'{activate_env} && ' \
         f'conda remove -y --force-remove jigsaw jigsawpy'
-    check_call(commands, logger=logger)
+    try:
+        check_call(commands, logger=logger)
+    except subprocess.CalledProcessError:
+        # it's fine if these aren't installed, we just want to make sure
+        pass
 
     commands = \
         f'{activate_env} && ' \
@@ -491,7 +495,7 @@ def build_spack_env(config, update_spack, machine, compiler, mpi,  # noqa: C901
     specs = list()
 
     if cmake != 'None':
-        specs.append(f'"cmake@{cmake}"')
+        specs.append(f'cmake@{cmake}')
 
     e3sm_hdf5_netcdf = config.getboolean('deploy', 'use_e3sm_hdf5_netcdf')
     if not e3sm_hdf5_netcdf:
@@ -500,37 +504,40 @@ def build_spack_env(config, update_spack, machine, compiler, mpi,  # noqa: C901
         netcdf_fortran = config.get('deploy', 'netcdf_fortran')
         pnetcdf = config.get('deploy', 'pnetcdf')
         specs.extend([
-            f'"hdf5@{hdf5}+cxx+fortran+hl+mpi+shared"',
-            f'"netcdf-c@{netcdf_c}+mpi~parallel-netcdf"',
-            f'"netcdf-fortran@{netcdf_fortran}"',
-            f'"parallel-netcdf@{pnetcdf}+cxx+fortran"'])
+            f'hdf5@{hdf5}+cxx+fortran+hl+mpi+shared',
+            f'netcdf-c@{netcdf_c}+mpi~parallel-netcdf',
+            f'netcdf-fortran@{netcdf_fortran}',
+            f'parallel-netcdf@{pnetcdf}+cxx+fortran'])
 
     if esmf != 'None':
-        specs.append(f'"esmf@{esmf}+mpi+netcdf~pnetcdf~external-parallelio"')
+        specs.append(f'esmf@{esmf}+mpi+netcdf~pnetcdf~external-parallelio')
     if lapack != 'None':
-        specs.append(f'"netlib-lapack@{lapack}"')
+        specs.append(f'netlib-lapack@{lapack}')
         include_e3sm_lapack = False
     else:
         include_e3sm_lapack = True
     if metis != 'None':
         specs.append(
-            f'"metis@{metis}+int64+real64"')
+            f'metis@{metis}+int64+real64')
     if moab != 'None':
         specs.append(
-            f'"moab@{moab}+mpi+hdf5+netcdf+pnetcdf+metis+parmetis+tempest"')
+            f'moab@{moab}+mpi+hdf5+netcdf+pnetcdf+metis+parmetis+tempest')
     if petsc != 'None':
-        specs.append(f'"petsc@{petsc}+mpi+batch"')
+        specs.append(f'petsc@{petsc}+mpi+batch')
 
     custom_spack = ''
     if scorpio != 'None':
         specs.append(
-            f'"scorpio'
-            f'@{scorpio}+pnetcdf~timing+internal-timing~tools+malloc"')
+            f'e3sm-scorpio'
+            f'@{scorpio}+mpi~timing~internal-timing~tools+malloc')
         # make sure scorpio, not esmf, libraries are linked
         lib_path = \
             f'{spack_branch_base}/var/spack/environments/' \
             f'{spack_env}/.spack-env/view/lib'
-        scorpio_lib_path = '$(spack find --format "{prefix}" scorpio)'
+        scorpio_lib_path = '$(spack find --format "{prefix}" e3sm-scorpio)'
+        if scorpio_lib_path == '':
+            raise ValueError('Could not find e3sm-scorpio in Spack. '
+                             'Did something go wrong with the build?')
         custom_spack = \
             f'{custom_spack}' \
             f'ln -sfn {scorpio_lib_path}/lib/libpioc.a {lib_path}\n' \
@@ -538,12 +545,12 @@ def build_spack_env(config, update_spack, machine, compiler, mpi,  # noqa: C901
 
     if parallelio != 'None':
         specs.append(
-            f'"parallelio'
-            f'@{parallelio}+pnetcdf~timing"')
+            f'parallelio'
+            f'@{parallelio}+pnetcdf~timing')
 
     if albany != 'None':
-        specs.append(f'"trilinos-for-albany@{albany}{trilinos_variants}"')
-        specs.append(f'"albany@{albany}{albany_variants}"')
+        specs.append(f'trilinos-for-albany@{albany}{trilinos_variants}')
+        specs.append(f'albany@{albany}{albany_variants}')
 
     yaml_template = f'{spack_template_path}/{machine}_{compiler}_{mpi}.yaml'
     if not os.path.exists(yaml_template):
