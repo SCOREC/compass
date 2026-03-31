@@ -94,8 +94,7 @@ class Mesh(Step):
         source_gridded_dataset_2km = 'greenland_2km_2024_01_29.epsg3413.nc'
 
         logger.info('calling build_cell_width')
-        cell_width, x1, y1, geom_points, geom_edges, \
-            geom_bounds, floodMask = \
+        cell_width, x1, y1, geom_points, geom_edges, floodMask = \
             build_cell_width(self, section_name=section_name,
                              gridded_dataset=source_gridded_dataset_2km,
                              flood_fill_start=[100, 700])
@@ -103,7 +102,6 @@ class Mesh(Step):
         # Now build the base mesh and perform the standard interpolation
         build_mali_mesh(
             self, cell_width, x1, y1, geom_points, geom_edges,
-            geom_bounds=geom_bounds,
             mesh_name=self.mesh_filename, section_name=section_name,
             gridded_dataset=source_gridded_dataset_1km, projection=src_proj,
             geojson_file=geojson_filename,

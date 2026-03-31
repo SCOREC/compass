@@ -1008,9 +1008,13 @@ def build_cell_width(self, section_name, gridded_dataset,
     margin_clean_contour = remove_triangles(margin_nocoin_contour,
                                             name="margin")
 
-    bound_edges = make_jigsaw_bounds(geom_edges)
-    all_points, all_edges = append_contour(3, margin_clean_contour,
-                                           geom_points, geom_edges)
+    # Note: The margin contour is extracted and cleaned above, and written
+    # to VTK files for visualization and use by alternative mesh generators.
+    # For now, we don't pass the margin contour to jigsaw - just use the
+    # rectangular bounding box. Uncomment below when implementing new mesher:
+    # bound_edges = make_jigsaw_bounds(geom_edges)
+    # all_points, all_edges = append_contour(3, margin_clean_contour,
+    #                                        geom_points, geom_edges)
 
     # Calculate distance from each grid point to ice edge
     # and grounding line, for use in cell spacing functions.
@@ -1028,7 +1032,7 @@ def build_cell_width(self, section_name, gridded_dataset,
 
     return (cell_width.astype('float64'),
             x1.astype('float64'), y1.astype('float64'),
-            all_points, all_edges, bound_edges,
+            geom_points, geom_edges,
             flood_mask)
 
 
@@ -1117,9 +1121,7 @@ def build_mali_mesh(self, cell_width, x1, y1, geom_points,
 
     logger.info('calling build_planar_mesh')
     build_planar_mesh(cell_width, x1, y1, geom_points,
-                      geom_edges, geom_bounds,
-                      preserve_geometry=preserve_geometry,
-                      logger=logger)
+                      geom_edges, logger=logger)
     dsMesh = xarray.open_dataset('base_mesh.nc')
     logger.info('culling mesh')
     dsMesh = cull(dsMesh, logger=logger)
