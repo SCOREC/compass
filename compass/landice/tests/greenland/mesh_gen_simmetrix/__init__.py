@@ -1,0 +1,40 @@
+from compass.landice.tests.greenland.mesh import Mesh
+from compass.testcase import TestCase
+from compass.validate import compare_variables
+
+
+class MeshGenSimmetrix(TestCase):
+    """
+    Mesh generation test case for Greenland using Simmetrix generate2dModel
+    instead of Jigsaw. Creates the mesh and initial condition for the
+    Greenland Ice Sheet.
+
+    The basal friction optimization occurs separately, outside of COMPASS.
+    """
+
+    def __init__(self, test_group):
+        """
+        Create the test case
+
+        Parameters
+        ----------
+        test_group : compass.landice.tests.greenland.Greenland
+            The test group that this test case belongs to
+        """
+        name = 'mesh_gen_simmetrix'
+        subdir = name
+        super().__init__(test_group=test_group, name=name,
+                         subdir=subdir)
+
+        self.add_step(
+            Mesh(test_case=self))
+
+    def validate(self):
+        """
+        Compare ``thickness``, ``bedTopography``, ``iceMask`` and
+        ``beta`` with a baseline if one was provided.
+        """
+        variables = ['thickness', 'bedTopography', 'iceMask',
+                     'beta']
+        compare_variables(test_case=self, variables=variables,
+                          filename1='mesh/GIS.nc')

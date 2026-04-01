@@ -998,16 +998,82 @@ def build_cell_width(self, section_name, gridded_dataset,
             y1.astype('float64'), geom_points, geom_edges, flood_mask)
 
 
+def convert_simmetrix_to_mpas_triangular_mesh(simmetrix_prefix,
+                                               output_filename,
+                                               logger=None):
+    """
+    Convert Simmetrix mesh output to minimal MPAS triangular mesh format.
+
+    This function reads the Simmetrix mesh (from generate2dModel output)
+    and creates a NetCDF file in the minimal triangular mesh format that
+    MpasMeshConverter.x can process.
+
+    Parameters
+    ----------
+    simmetrix_prefix : str
+        Output prefix used by generate2dModel (e.g., 'gl_wBbox')
+        The function should look for files like:
+        - <prefix>-mesh.sms (or other Simmetrix format files)
+
+    output_filename : str
+        Output NetCDF filename (typically 'mesh_triangles.nc')
+
+    logger : logging.Logger, optional
+        A logger for the output if not stdout
+
+    Notes
+    -----
+    This is a STUB function that needs to be implemented using Simmetrix
+    C++ APIs to:
+    1. Read the Simmetrix mesh
+    2. Extract vertices, triangles, and their geometric model classification
+    3. Create NetCDF file with required minimal mesh structure
+
+    Required variables in output (see mpasMeshInfo.md for details):
+    - dimensions: nCells, nVertices, vertexDegree=3
+    - xVertex, yVertex, zVertex (nVertices)
+    - xCell, yCell, zCell (nCells) - triangle centers
+    - cellsOnVertex (nVertices, vertexDegree) - 1-based indexing!
+    - meshDensity (nCells) - optional
+    - geomModelIdCell, geomModelDimCell (nCells) - for classification
+    - geomModelIdVertex, geomModelDimVertex (nVertices) - for classification
+
+    Global attributes:
+    - on_a_sphere = "NO"
+    - sphere_radius = 0.0
+    """
+    if logger is None:
+        import logging
+        logger = logging.getLogger()
+
+    # TODO: IMPLEMENT THIS FUNCTION
+    # This requires using Simmetrix C++ APIs or parsing Simmetrix output format
+
+    raise NotImplementedError(
+        f"convert_simmetrix_to_mpas_triangular_mesh() must be implemented.\n"
+        f"This function should:\n"
+        f"  1. Read Simmetrix mesh from files with prefix '{simmetrix_prefix}'\n"
+        f"  2. Extract triangles, vertices, and geometric model classification\n"
+        f"  3. Write minimal MPAS mesh to '{output_filename}'\n"
+        f"See mpasMeshInfo.md for required NetCDF structure.\n"
+        f"Example Simmetrix files to look for:\n"
+        f"  - {simmetrix_prefix}-mesh.sms\n"
+        f"  - {simmetrix_prefix}.vtk\n"
+        f"  - Other Simmetrix output formats"
+    )
+
+
 def build_mali_mesh(self, cell_width, x1, y1, geom_points,
                     geom_edges, mesh_name, section_name,
                     gridded_dataset, projection, geojson_file=None,
                     cores=1, bounding_box=None):
     """
     Create the MALI mesh based on final cell widths determined by
-    :py:func:`compass.landice.mesh.build_cell_width()`, using Jigsaw and
-    MPAS-Tools functions. Culls the mesh based on config options, interpolates
-    all available fields from the gridded dataset to the MALI mesh using the
-    bilinear method, and marks domain boundaries as Dirichlet cells.
+    :py:func:`compass.landice.mesh.build_cell_width()`, using Jigsaw or
+    Simmetrix and MPAS-Tools functions. Culls the mesh based on config
+    options, interpolates all available fields from the gridded dataset to
+    the MALI mesh using the bilinear method, and marks domain boundaries as
+    Dirichlet cells.
 
     Parameters
     ----------
@@ -1039,7 +1105,11 @@ def build_mali_mesh(self, cell_width, x1, y1, geom_points,
         ``min_spac``, ``max_spac``, ``high_log_speed``, ``low_log_speed``,
         ``high_dist``, ``low_dist``, ``high_dist_bed``, ``low_dist_bed``,
         ``high_bed``, ``low_bed``, ``cull_distance``, ``use_speed``,
-        ``use_dist_to_edge``, ``use_dist_to_grounding_line``, and ``use_bed``.
+        ``use_dist_to_edge``, ``use_dist_to_grounding_line``, ``use_bed``,
+        ``mesh_generator`` (default: 'jigsaw', can be 'simmetrix'),
+        and Simmetrix-specific options: ``simmetrix_binary``,
+        ``simmetrix_coincident_tolerance``, ``simmetrix_angle_tolerance``,
+        ``simmetrix_oncurve_angle_tolerance``, ``simmetrix_units``.
         See the Land-Ice Framework section of the Users or Developers guide
         for more information about these options and their uses.
 
@@ -1070,9 +1140,60 @@ def build_mali_mesh(self, cell_width, x1, y1, geom_points,
     logger = self.logger
     section = self.config[section_name]
 
-    logger.info('calling build_planar_mesh')
-    build_planar_mesh(cell_width, x1, y1, geom_points,
-                      geom_edges, logger=logger)
+    # Check which mesh generator to use
+    mesh_generator = section.get('mesh_generator', 'jigsaw').lower()
+
+    if mesh_generator == 'simmetrix':
+        logger.info('Using Simmetrix generate2dModel for mesh generation')
+
+        # Get Simmetrix parameters from config (with defaults for GIS)
+        coincident_tol = section.getfloat('simmetrix_coincident_tolerance',
+                                          1.0)
+        angle_tol = section.getfloat('simmetrix_angle_tolerance', 100.0)
+        oncurve_angle_tol = section.getfloat(
+            'simmetrix_oncurve_angle_tolerance', 100.0)
+        units = section.get('simmetrix_units', 'm')
+
+        # Get path to generate2dModel binary
+        # Default to 'generate2dModel' (assumes it's in PATH)
+        # Can be overridden with full path in config
+        simmetrix_binary = section.get('simmetrix_binary',
+                                        'generate2dModel')
+
+        # Call generate2dModel
+        input_vtk = 'gl_wBbox.vtk'
+        output_prefix = 'gl_wBbox'
+
+        if not os.path.exists(input_vtk):
+            raise FileNotFoundError(
+                f'Input file {input_vtk} not found. Ensure '
+                'build_cell_width() was called first to create this file.')
+
+        args = [simmetrix_binary, input_vtk, output_prefix,
+                str(coincident_tol), str(angle_tol), str(oncurve_angle_tol),
+                '1',  # createMesh = 1 (generate mesh)
+                units]
+
+        logger.info(f'Running: {" ".join(args)}')
+        check_call(args, logger=logger)
+
+        # Convert Simmetrix mesh output to minimal MPAS triangular mesh
+        # User needs to implement this function (see below for stub)
+        logger.info('Converting Simmetrix mesh to MPAS triangular mesh '
+                    'format')
+        convert_simmetrix_to_mpas_triangular_mesh(
+            output_prefix, 'mesh_triangles.nc', logger=logger)
+
+        # Now convert to full MPAS mesh using MpasMeshConverter.x
+        logger.info('Converting triangular mesh to MPAS mesh')
+        args = ['MpasMeshConverter.x', 'mesh_triangles.nc', 'base_mesh.nc']
+        check_call(args, logger=logger)
+
+    else:  # Default to Jigsaw
+        logger.info('calling build_planar_mesh')
+        build_planar_mesh(cell_width, x1, y1, geom_points,
+                          geom_edges, logger=logger)
+
     dsMesh = xarray.open_dataset('base_mesh.nc')
     logger.info('culling mesh')
     dsMesh = cull(dsMesh, logger=logger)

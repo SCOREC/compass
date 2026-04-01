@@ -2,6 +2,7 @@ from compass.landice.tests.greenland.decomposition_test import (
     DecompositionTest,
 )
 from compass.landice.tests.greenland.mesh_gen import MeshGen
+from compass.landice.tests.greenland.mesh_gen_simmetrix import MeshGenSimmetrix
 from compass.landice.tests.greenland.restart_test import RestartTest
 from compass.landice.tests.greenland.smoke_test import SmokeTest
 from compass.testgroup import TestGroup
@@ -30,3 +31,6 @@ class Greenland(TestGroup):
 
         self.add_test_case(
             MeshGen(test_group=self))
+
+        self.add_test_case(
+            MeshGenSimmetrix(test_group=self))
