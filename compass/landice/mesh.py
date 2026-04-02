@@ -998,71 +998,6 @@ def build_cell_width(self, section_name, gridded_dataset,
             y1.astype('float64'), geom_points, geom_edges, flood_mask)
 
 
-def convert_simmetrix_to_mpas_triangular_mesh(simmetrix_prefix,
-                                               output_filename,
-                                               logger=None):
-    """
-    Convert Simmetrix mesh output to minimal MPAS triangular mesh format.
-
-    This function reads the Simmetrix mesh (from generate2dModel output)
-    and creates a NetCDF file in the minimal triangular mesh format that
-    MpasMeshConverter.x can process.
-
-    Parameters
-    ----------
-    simmetrix_prefix : str
-        Output prefix used by generate2dModel (e.g., 'gl_wBbox')
-        The function should look for files like:
-        - <prefix>-mesh.sms (or other Simmetrix format files)
-
-    output_filename : str
-        Output NetCDF filename (typically 'mesh_triangles.nc')
-
-    logger : logging.Logger, optional
-        A logger for the output if not stdout
-
-    Notes
-    -----
-    This is a STUB function that needs to be implemented using Simmetrix
-    C++ APIs to:
-    1. Read the Simmetrix mesh
-    2. Extract vertices, triangles, and their geometric model classification
-    3. Create NetCDF file with required minimal mesh structure
-
-    Required variables in output (see mpasMeshInfo.md for details):
-    - dimensions: nCells, nVertices, vertexDegree=3
-    - xVertex, yVertex, zVertex (nVertices)
-    - xCell, yCell, zCell (nCells) - triangle centers
-    - cellsOnVertex (nVertices, vertexDegree) - 1-based indexing!
-    - meshDensity (nCells) - optional
-    - geomModelIdCell, geomModelDimCell (nCells) - for classification
-    - geomModelIdVertex, geomModelDimVertex (nVertices) - for classification
-
-    Global attributes:
-    - on_a_sphere = "NO"
-    - sphere_radius = 0.0
-    """
-    if logger is None:
-        import logging
-        logger = logging.getLogger()
-
-    # TODO: IMPLEMENT THIS FUNCTION
-    # This requires using Simmetrix C++ APIs or parsing Simmetrix output format
-
-    raise NotImplementedError(
-        f"convert_simmetrix_to_mpas_triangular_mesh() must be implemented.\n"
-        f"This function should:\n"
-        f"  1. Read Simmetrix mesh from files with prefix '{simmetrix_prefix}'\n"
-        f"  2. Extract triangles, vertices, and geometric model classification\n"
-        f"  3. Write minimal MPAS mesh to '{output_filename}'\n"
-        f"See mpasMeshInfo.md for required NetCDF structure.\n"
-        f"Example Simmetrix files to look for:\n"
-        f"  - {simmetrix_prefix}-mesh.sms\n"
-        f"  - {simmetrix_prefix}.vtk\n"
-        f"  - Other Simmetrix output formats"
-    )
-
-
 def build_mali_mesh(self, cell_width, x1, y1, geom_points,
                     geom_edges, mesh_name, section_name,
                     gridded_dataset, projection, geojson_file=None,
@@ -1177,16 +1112,10 @@ def build_mali_mesh(self, cell_width, x1, y1, geom_points,
         logger.info(f'Running: {" ".join(args)}')
         check_call(args, logger=logger)
 
-        # Convert Simmetrix mesh output to minimal MPAS triangular mesh
-        # User needs to implement this function (see below for stub)
-        logger.info('Converting Simmetrix mesh to MPAS triangular mesh '
-                    'format')
-        convert_simmetrix_to_mpas_triangular_mesh(
-            output_prefix, 'mesh_triangles.nc', logger=logger)
-
-        # Now convert to full MPAS mesh using MpasMeshConverter.x
+        # generate2dModel now directly outputs gl_wBbox.nc in MPAS format
+        # Convert to full MPAS mesh using MpasMeshConverter.x
         logger.info('Converting triangular mesh to MPAS mesh')
-        args = ['MpasMeshConverter.x', 'mesh_triangles.nc', 'base_mesh.nc']
+        args = ['MpasMeshConverter.x', 'gl_wBbox.nc', 'base_mesh.nc']
         check_call(args, logger=logger)
 
     else:  # Default to Jigsaw
