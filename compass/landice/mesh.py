@@ -1109,7 +1109,6 @@ def build_mali_mesh(self, cell_width, x1, y1, geom_points,
                 '1',  # createMesh = 1 (generate mesh)
                 units]
 
-        logger.info(f'Running: {" ".join(args)}')
         check_call(args, logger=logger)
 
         # generate2dModel now directly outputs gl_wBbox.nc in MPAS format
