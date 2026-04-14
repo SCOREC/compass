@@ -697,16 +697,9 @@ def get_phi(thk, topg, x, y):
     assert (thk.shape == (len(y), len(x)))
     tic = time.time()
 
-    # Using the grounding line level set
-    # expression 'phi = rho_i * thk + rho_w * topg'
-    # results in a runtime overflow warning as 'topg'
-    # has values around 1e37 near two of the domain
-    # corners (minx,miny) and (maxx,miny).
-    # In those corners the level set distance will be set to
-    # max distance = max(maxx, maxy)
     max_distance = max(max(x), max(y))
 
-    phi = np.where(not np.allclose(thk, 0) and thk < 0,
+    phi = np.where(np.isclose(thk, 0, atol=1e-10),
                    max_distance,
                    rho_i() * thk + rho_w() * topg)
     toc = time.time()
@@ -738,7 +731,7 @@ def extract_contour(field, x, y, name):
     """ the field is expected to be either 0 or 1 at
     each grid point """
 
-    assert np.all(v == 0 or v == 1 for v in field)
+    assert np.all((field == 0) | (field == 1))
     assert (field.shape == (len(y), len(x)))
     tic = time.time()
     contours = find_contours(field.T, 0.5)
@@ -963,29 +956,48 @@ def build_cell_width(self, section_name, gridded_dataset,
     thk[flood_mask == 0] = 0.0
     vx[flood_mask == 0] = 0.0
     vy[flood_mask == 0] = 0.0
-    
-    phi = get_phi(thk, topg, x1, y1)
-    phi_ff = gridded_flood_fill(phi)
-    gl_contour = extract_contour(phi_ff, x1, y1, "gl")
-    gl_coarsened_contour = collapse_small_edges(gl_contour,
-                                                small=500, name="gl")
-    gl_nocoin_contour = remove_coincident_edges(gl_coarsened_contour,
-                                                name="gl")
-    gl_notri_contour = remove_triangles(gl_nocoin_contour, name="gl")
 
-    s_height = get_ice_surface_height(phi, topg, thk)
-    s_height_ff = gridded_flood_fill(s_height)
-
-    all_points, all_edges = append_contour(3, gl_notri_contour,
-                                           geom_points, geom_edges)
-    writeToVtk(all_points, all_edges, "gl_wBbox.vtk")
-    
     # Calculate distance from each grid point to ice edge
     # and grounding line, for use in cell spacing functions.
     distToEdge, distToGL = get_dist_to_edge_and_gl(
         self, thk, topg, x1,
         y1, section_name=section_name)
 
+    print("using distToEdge for contour extraction\n")
+    distToEdge_ff = gridded_flood_fill(distToEdge)
+    edge_contour = extract_contour(distToEdge_ff, x1, y1, "edge")
+    edge_coarsened_contour = collapse_small_edges(edge_contour,
+                                                  small=500, name="edge")
+    edge_nocoin_contour = remove_coincident_edges(edge_coarsened_contour,
+                                                  name="edge")
+    edge_notri_contour = remove_triangles(edge_nocoin_contour, name="edge")
+
+    all_points, all_edges = append_contour(3, edge_notri_contour,
+                                           geom_points, geom_edges)
+    writeToVtk(all_points, all_edges, "edge_wBbox.vtk")
+
+    phi = get_phi(thk, topg, x1, y1)
+    s_height = get_ice_surface_height(phi, topg, thk)
+    s_height_ff = gridded_flood_fill(s_height)
+
+    out_file = Dataset("s_height.nc", 'w')
+    out_file.createDimension("x1", len(x1))
+    out_file.createDimension("y1", len(y1))
+    x1_var = out_file.createVariable("x1", "f8", ("x1"))
+    x1_var[:] = x1[:]
+    y1_var = out_file.createVariable("y1", "f8", ("y1"))
+    y1_var[:] = y1[:]
+    thk_var = out_file.createVariable("thk", "f8", ("y1", "x1"))
+    thk_var[:, :] = thk[:, :]
+    phi_var = out_file.createVariable("phi", "f8", ("y1", "x1"))
+    phi_var[:, :] = phi[:, :]
+    distToEdge_var = out_file.createVariable("distToEdge", "f8", ("y1", "x1"))
+    distToEdge_var[:, :] = distToEdge[:, :]
+    s_var = out_file.createVariable("s_height", "f8", ("y1", "x1"))
+    s_var[:, :] = s_height[:, :]
+    f_var = out_file.createVariable("s_height_ff", "f8", ("y1", "x1"))
+    f_var[:, :] = s_height_ff[:, :]
+    out_file.close()
     # Set cell widths based on mesh parameters set in config file
     cell_width = set_cell_width(self, section_name=section_name,
                                 thk=thk, bed=topg, vx=vx, vy=vy,
@@ -1096,8 +1108,8 @@ def build_mali_mesh(self, cell_width, x1, y1, geom_points,
                                         'generate2dModel')
 
         # Call generate2dModel
-        input_vtk = 'gl_wBbox.vtk'
-        output_prefix = 'gl_wBbox'
+        input_vtk = 'edge_wBbox.vtk'
+        output_prefix = 'edge_wBbox'
 
         if not os.path.exists(input_vtk):
             raise FileNotFoundError(
@@ -1111,10 +1123,10 @@ def build_mali_mesh(self, cell_width, x1, y1, geom_points,
 
         check_call(args, logger=logger)
 
-        # generate2dModel now directly outputs gl_wBbox.nc in MPAS format
+        # generate2dModel now directly outputs edge_wBbox.nc in MPAS format
         # Convert to full MPAS mesh using MpasMeshConverter.x
         logger.info('Converting triangular mesh to MPAS mesh')
-        args = ['MpasMeshConverter.x', 'gl_wBbox.nc', 'base_mesh.nc']
+        args = ['MpasMeshConverter.x', output_prefix + '.nc', 'base_mesh.nc']
         check_call(args, logger=logger)
 
     else:  # Default to Jigsaw
