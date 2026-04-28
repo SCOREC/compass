@@ -512,6 +512,38 @@ def writeContoursToVtk(contour, file):
 
     mesh.write(file)
 
+def get_edges_and_points(contour):
+    """
+    Form the points and edges arrays that :py:func:`writeToVtk` expects
+    directly from a contour, without including a bounding box.
+
+    Parameters
+    ----------
+    contour : np.array
+        Array of (x, y) coordinates forming a closed loop such that
+        the first and last points are identical.
+
+    Returns
+    -------
+    points : numpy.ndarray
+        Array of (x, y) coordinates from ``contour``.
+
+    edges : list of tuple
+        List of (i, j) index pairs defining edges between adjacent
+        contour points, forming a closed loop.
+    """
+    assert (contour[0] == contour[-1]).all()
+
+    points = np.array(contour)
+
+    n = len(contour[:-1])
+    indices = list(range(n))
+    indices.append(0)
+    edges = list(zip(indices[:-1], indices[1:]))
+
+    return points, edges
+
+
 def writeToVtk(points, edges, filename):
     """Writes a VTK mesh file from the given contour
        (points and edges)."""
@@ -972,9 +1004,8 @@ def build_cell_width(self, section_name, gridded_dataset,
                                                   name="edge")
     edge_notri_contour = remove_triangles(edge_nocoin_contour, name="edge")
 
-    all_points, all_edges = append_contour(3, edge_notri_contour,
-                                           geom_points, geom_edges)
-    writeToVtk(all_points, all_edges, "edge_wBbox.vtk")
+    all_points, all_edges = get_points_and_edges(edge_notri_contour)
+    writeToVtk(all_points, all_edges, "edge.vtk")
 
     phi = get_phi(thk, topg, x1, y1)
     s_height = get_ice_surface_height(phi, topg, thk)
@@ -1108,8 +1139,8 @@ def build_mali_mesh(self, cell_width, x1, y1, geom_points,
                                         'generate2dModel')
 
         # Call generate2dModel
-        input_vtk = 'edge_wBbox.vtk'
-        output_prefix = 'edge_wBbox'
+        input_vtk = 'edge.vtk'
+        output_prefix = 'edge'
 
         if not os.path.exists(input_vtk):
             raise FileNotFoundError(
@@ -1123,7 +1154,7 @@ def build_mali_mesh(self, cell_width, x1, y1, geom_points,
 
         check_call(args, logger=logger)
 
-        # generate2dModel now directly outputs edge_wBbox.nc in MPAS format
+        # generate2dModel now directly outputs edge.nc in MPAS format
         # Convert to full MPAS mesh using MpasMeshConverter.x
         logger.info('Converting triangular mesh to MPAS mesh')
         args = ['MpasMeshConverter.x', output_prefix + '.nc', 'base_mesh.nc']
