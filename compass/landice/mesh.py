@@ -947,7 +947,7 @@ def build_cell_width(self, section_name, gridded_dataset,
                                                   name="edge")
     edge_notri_contour = remove_triangles(edge_nocoin_contour, name="edge")
 
-    all_points, all_edges = get_points_and_edges(edge_notri_contour)
+    all_points, all_edges = get_edges_and_points(edge_notri_contour)
     writeToVtk(all_points, all_edges, "edge.vtk")
 
     phi = get_phi(thk, topg, x1, y1)
