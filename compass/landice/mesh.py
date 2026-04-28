@@ -1155,16 +1155,19 @@ def build_mali_mesh(self, cell_width, x1, y1, geom_points,
 
     check_call(args, logger=logger)
 
-    cullDistance = section.get('cull_distance')
-    if float(cullDistance) > 0.:
-        args = ['define_landice_cull_mask', '-f',
-                'grid_preCull.nc', '-m',
-                'distance', '-d', cullDistance]
-
-        check_call(args, logger=logger)
+    if mesh_generator == 'simmetrix':
+        logger.info('Simmetrix mesh: skipping distance-based culling')
     else:
-        logger.info('cullDistance <= 0 in config file. '
-                    'Will not cull by distance to margin. \n')
+        cullDistance = section.get('cull_distance')
+        if float(cullDistance) > 0.:
+            args = ['define_landice_cull_mask', '-f',
+                    'grid_preCull.nc', '-m',
+                    'distance', '-d', cullDistance]
+
+            check_call(args, logger=logger)
+        else:
+            logger.info('cullDistance <= 0 in config file. '
+                        'Will not cull by distance to margin. \n')
 
     if geojson_file is not None:
         # This step is only necessary because the GeoJSON region
@@ -1199,17 +1202,24 @@ def build_mali_mesh(self, cell_width, x1, y1, geom_points,
     dsMesh = cull(dsMesh, dsInverse=mask, logger=logger)
     write_netcdf(dsMesh, 'culled.nc')
 
-    logger.info('Marking horns for culling')
-    args = ['mark_horns_for_culling', '-f', 'culled.nc']
+    if mesh_generator == 'simmetrix':
+        logger.info('Simmetrix mesh: skipping horn culling')
+        dsMesh = xarray.open_dataset('culled.nc')
+        dsMesh = convert(dsMesh, logger=logger)
+        dsMesh = sort_mesh(dsMesh)
+        write_netcdf(dsMesh, 'dehorned.nc')
+    else:
+        logger.info('Marking horns for culling')
+        args = ['mark_horns_for_culling', '-f', 'culled.nc']
 
-    check_call(args, logger=logger)
+        check_call(args, logger=logger)
 
-    logger.info('culling, converting, and sorting')
-    dsMesh = xarray.open_dataset('culled.nc')
-    dsMesh = cull(dsMesh, logger=logger)
-    dsMesh = convert(dsMesh, logger=logger)
-    dsMesh = sort_mesh(dsMesh)
-    write_netcdf(dsMesh, 'dehorned.nc')
+        logger.info('culling, converting, and sorting')
+        dsMesh = xarray.open_dataset('culled.nc')
+        dsMesh = cull(dsMesh, logger=logger)
+        dsMesh = convert(dsMesh, logger=logger)
+        dsMesh = sort_mesh(dsMesh)
+        write_netcdf(dsMesh, 'dehorned.nc')
 
     args = ['create_landice_grid_from_generic_mpas_grid', '-i',
             'dehorned.nc', '-o',
