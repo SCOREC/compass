@@ -94,7 +94,8 @@ class Mesh(Step):
         source_gridded_dataset_2km = 'greenland_2km_2024_01_29.epsg3413.nc'
 
         logger.info('calling build_cell_width')
-        cell_width, x1, y1, geom_points, geom_edges, floodMask = \
+        cell_width, x1, y1, geom_points, geom_edges, floodMask, \
+            dist_to_edge = \
             build_cell_width(
                 self, section_name=section_name,
                 gridded_dataset=source_gridded_dataset_2km,
@@ -107,6 +108,7 @@ class Mesh(Step):
             gridded_dataset=source_gridded_dataset_1km, projection=src_proj,
             geojson_file=geojson_filename,
             bounding_box=bounding_box,
+            dist_to_edge=dist_to_edge,
         )
 
         # Create scrip file for the newly generated mesh

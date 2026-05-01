@@ -925,6 +925,10 @@ def build_cell_width(self, section_name, gridded_dataset,
         mask calculated by the flood fill routine,
         where cells connected to the ice sheet (or main feature)
         are 1 and everything else is 0.
+
+    dist_to_edge : numpy.ndarray
+        Distance from each grid point to the ice margin (m), on the
+        same grid as the gridded dataset.
     """
 
     section = self.config[section_name]
@@ -1007,13 +1011,14 @@ def build_cell_width(self, section_name, gridded_dataset,
                                 flood_fill_jStart=flood_fill_start[1])
 
     return (cell_width.astype('float64'), x1.astype('float64'),
-            y1.astype('float64'), geom_points, geom_edges, flood_mask)
+            y1.astype('float64'), geom_points, geom_edges, flood_mask,
+            distToEdge)
 
 
 def build_mali_mesh(self, cell_width, x1, y1, geom_points,
                     geom_edges, mesh_name, section_name,
                     gridded_dataset, projection, geojson_file=None,
-                    cores=1, bounding_box=None):
+                    cores=1, bounding_box=None, dist_to_edge=None):
     """
     Create the MALI mesh based on final cell widths determined by
     :py:func:`compass.landice.mesh.build_cell_width()`, using Jigsaw or
@@ -1075,6 +1080,13 @@ def build_mali_mesh(self, cell_width, x1, y1, geom_points,
 
     bounding_box : array_like of float, shape (4,), optional
         Bounding box [x_min, x_max, y_min, y_max] to cull mesh outside of
+
+    dist_to_edge : numpy.ndarray, optional
+        Distance from each gridded dataset point to the ice margin (m),
+        on the x1/y1 grid. When provided, cells are culled based on
+        whether their nearest gridded ``dist_to_edge`` value exceeds
+        ``cull_distance``, rather than using the mesh-based
+        ``define_landice_cull_mask`` approach.
     """
 
     if bounding_box is not None and geojson_file is None:
@@ -1157,11 +1169,35 @@ def build_mali_mesh(self, cell_width, x1, y1, geom_points,
 
     cullDistance = section.get('cull_distance')
     if float(cullDistance) > 0.:
-        args = ['define_landice_cull_mask', '-f',
-                'grid_preCull.nc', '-m',
-                'distance', '-d', cullDistance]
+        if dist_to_edge is not None:
+            logger.info('Defining cull mask from gridded dist_to_edge field')
+            dsMeshPreCull = xarray.open_dataset('grid_preCull.nc')
+            xCell = dsMeshPreCull['xCell'].values
+            yCell = dsMeshPreCull['yCell'].values
+            # Interpolate dist_to_edge onto mesh cell centers
+            dist_interp = interpn(
+                (y1, x1), dist_to_edge, (yCell, xCell),
+                method='linear', bounds_error=False,
+                fill_value=np.max(dist_to_edge))
+            # thickness was interpolated onto grid_preCull.nc by
+            # interpolate_to_mpasli_grid above; use it to identify
+            # ice interior cells, which must never be culled regardless
+            # of their distance to the margin
+            thickness = dsMeshPreCull['thickness'].values[0, :]
+            cull_dist_m = float(cullDistance) * 1.0e3
+            cullCell = np.logical_and(
+                thickness == 0.0,
+                dist_interp > cull_dist_m).astype(np.int32)
+            dsMeshPreCull['cullCell'] = xarray.DataArray(
+                cullCell, dims=['nCells'])
+            write_netcdf(dsMeshPreCull, 'grid_preCull.nc')
+            dsMeshPreCull.close()
+        else:
+            args = ['define_landice_cull_mask', '-f',
+                    'grid_preCull.nc', '-m',
+                    'distance', '-d', cullDistance]
 
-        check_call(args, logger=logger)
+            check_call(args, logger=logger)
     else:
         logger.info('cullDistance <= 0 in config file. '
                     'Will not cull by distance to margin. \n')
