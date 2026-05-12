@@ -1174,7 +1174,7 @@ def build_mali_mesh(self, cell_width, x1, y1, geom_points,
 
     cullDistance = section.get('cull_distance')
     if float(cullDistance) > 0.:
-        if dist_to_edge is not None:
+        if mesh_generator == 'simmetrix' and dist_to_edge is not None:
             logger.info('Defining cull mask from gridded dist_to_edge field')
             dsMeshPreCull = xarray.open_dataset('grid_preCull.nc')
             xCell = dsMeshPreCull['xCell'].values
@@ -1184,15 +1184,28 @@ def build_mali_mesh(self, cell_width, x1, y1, geom_points,
                 (y1, x1), dist_to_edge, (yCell, xCell),
                 method='linear', bounds_error=False,
                 fill_value=np.max(dist_to_edge))
-            # thickness was interpolated onto grid_preCull.nc by
-            # interpolate_to_mpasli_grid above; use it to identify
-            # ice interior cells, which must never be culled regardless
-            # of their distance to the margin
-            thickness = dsMeshPreCull['thickness'].values[0, :]
             cull_dist_m = float(cullDistance) * 1.0e3
             # Interior cells have negative dist_interp, so the threshold
             # comparison alone excludes them from culling.
             cullCell = (dist_interp > cull_dist_m).astype(np.int32)
+
+            # Ensure culled region is topologically connected to the
+            # domain boundary. Isolated culled patches within the buffer
+            # region are un-culled so there are no holes in the retained
+            # mesh.
+            cellsOnCell = dsMeshPreCull['cellsOnCell'].values
+            nEdgesOnCell = dsMeshPreCull['nEdgesOnCell'].values
+            maxEdges = cellsOnCell.shape[1]
+            col_idx = np.arange(maxEdges)
+            valid_edge = (col_idx[np.newaxis, :] <
+                          nEdgesOnCell[:, np.newaxis])
+            boundary_mask = np.any(
+                (cellsOnCell == 0) & valid_edge,
+                axis=1).astype(np.int32)
+            seed_mask = (boundary_mask & cullCell).astype(np.int32)
+            cullCell = mpas_flood_fill(seed_mask, cullCell,
+                                       cellsOnCell, nEdgesOnCell)
+
             dsMeshPreCull['cullCell'] = xarray.DataArray(
                 cullCell, dims=['nCells'])
             write_netcdf(dsMeshPreCull, 'grid_preCull.nc')
