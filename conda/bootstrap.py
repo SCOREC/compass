@@ -391,6 +391,7 @@ def build_jigsaw(activate_env, source_path, env_path, logger):
 
     commands = \
         f'conda install -y {jigsaw_build_deps} && ' \
+        f'unset LD_LIBRARY_PATH && ' \
         f'cd {source_path}/jigsaw-python/external/jigsaw && ' \
         f'rm -rf tmp && ' \
         f'mkdir tmp && ' \
