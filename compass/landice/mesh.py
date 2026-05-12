@@ -484,8 +484,9 @@ def set_cell_width(self, section_name, thk, bed=None, vx=None, vy=None,
     # cell size in the final mesh. There may be a more rigorous way to set
     # that distance.
     if dist_to_edge is not None:
-        mask = np.logical_and(
-            thk == 0.0, dist_to_edge > np.abs(3. * cull_distance))
+        # Interior cells have negative dist_to_edge, so the threshold
+        # comparison alone is sufficient to identify far exterior cells.
+        mask = dist_to_edge > np.abs(3. * cull_distance)
         logger.info('Setting cell_width in outer regions to max_spac '
                     f'for {mask.sum()} cells')
         cell_width[mask] = max_spac
@@ -980,6 +981,10 @@ def build_cell_width(self, section_name, gridded_dataset,
                                            geom_points, geom_edges)
     writeToVtk(all_points, all_edges, "edge_wBbox.vtk")
 
+    # Sign distToEdge: interior (flood_mask==1) is negative, exterior positive.
+    # Must come after distToEdge_ff, which requires unsigned values as barriers.
+    distToEdge[flood_mask == 1] *= -1
+
     phi = get_phi(thk, topg, x1, y1)
     s_height = get_ice_surface_height(phi, topg, thk)
     s_height_ff = gridded_flood_fill(s_height)
@@ -1185,9 +1190,9 @@ def build_mali_mesh(self, cell_width, x1, y1, geom_points,
             # of their distance to the margin
             thickness = dsMeshPreCull['thickness'].values[0, :]
             cull_dist_m = float(cullDistance) * 1.0e3
-            cullCell = np.logical_and(
-                thickness == 0.0,
-                dist_interp > cull_dist_m).astype(np.int32)
+            # Interior cells have negative dist_interp, so the threshold
+            # comparison alone excludes them from culling.
+            cullCell = (dist_interp > cull_dist_m).astype(np.int32)
             dsMeshPreCull['cullCell'] = xarray.DataArray(
                 cullCell, dims=['nCells'])
             write_netcdf(dsMeshPreCull, 'grid_preCull.nc')
