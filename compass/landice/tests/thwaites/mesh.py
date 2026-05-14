@@ -42,7 +42,7 @@ class Mesh(Step):
         section_name = 'mesh'
 
         logger.info('calling build_cell_width')
-        cell_width, x1, y1, geom_points, geom_edges, floodMask = \
+        cell_width, x1, y1, geom_points, geom_edges, floodMask, _ = \
             build_cell_width(
                 self, section_name=section_name,
                 gridded_dataset='antarctica_8km_2024_01_29.nc')

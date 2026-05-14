@@ -484,8 +484,9 @@ def set_cell_width(self, section_name, thk, bed=None, vx=None, vy=None,
     # cell size in the final mesh. There may be a more rigorous way to set
     # that distance.
     if dist_to_edge is not None:
-        mask = np.logical_and(
-            thk == 0.0, dist_to_edge > np.abs(3. * cull_distance))
+        # Interior cells have negative dist_to_edge, so the threshold
+        # comparison alone is sufficient to identify far exterior cells.
+        mask = dist_to_edge > np.abs(3. * cull_distance)
         logger.info('Setting cell_width in outer regions to max_spac '
                     f'for {mask.sum()} cells')
         cell_width[mask] = max_spac
@@ -925,6 +926,10 @@ def build_cell_width(self, section_name, gridded_dataset,
         mask calculated by the flood fill routine,
         where cells connected to the ice sheet (or main feature)
         are 1 and everything else is 0.
+
+    dist_to_edge : numpy.ndarray
+        Distance from each grid point to the ice margin (m), on the
+        same grid as the gridded dataset.
     """
 
     section = self.config[section_name]
@@ -976,6 +981,10 @@ def build_cell_width(self, section_name, gridded_dataset,
                                            geom_points, geom_edges)
     writeToVtk(all_points, all_edges, "edge_wBbox.vtk")
 
+    # Sign distToEdge: interior (flood_mask==1) is negative, exterior positive.
+    # Must come after distToEdge_ff, which requires unsigned values as barriers.
+    distToEdge[flood_mask == 1] *= -1
+
     phi = get_phi(thk, topg, x1, y1)
     s_height = get_ice_surface_height(phi, topg, thk)
     s_height_ff = gridded_flood_fill(s_height)
@@ -1007,13 +1016,170 @@ def build_cell_width(self, section_name, gridded_dataset,
                                 flood_fill_jStart=flood_fill_start[1])
 
     return (cell_width.astype('float64'), x1.astype('float64'),
-            y1.astype('float64'), geom_points, geom_edges, flood_mask)
+            y1.astype('float64'), geom_points, geom_edges, flood_mask,
+            distToEdge)
+
+
+def get_ordered_boundary_cells(dsMesh):
+    """
+    Walk boundary edges to return a closed, ordered sequence of 0-based
+    boundary cell indices.  Corner cells (those with two boundary edges)
+    appear once; the first index is repeated at the end to close the loop.
+
+    Parameters
+    ----------
+    dsMesh : xarray.Dataset
+        MPAS mesh dataset containing ``cellsOnEdge`` and ``verticesOnEdge``.
+
+    Returns
+    -------
+    ordered : numpy.ndarray
+        0-based cell indices of length N+1 where N is the number of unique
+        boundary cells and ``ordered[0] == ordered[-1]``.
+    """
+    cellsOnEdge = dsMesh['cellsOnEdge'].values      # (nEdges, 2), 1-based
+    verticesOnEdge = dsMesh['verticesOnEdge'].values  # (nEdges, 2), 1-based
+
+    # Boundary edges: one cell slot is the null cell (index 0 in 1-based)
+    is_bnd = np.any(cellsOnEdge == 0, axis=1)
+    bnd_e = np.where(is_bnd)[0]
+
+    c0 = cellsOnEdge[bnd_e, 0]
+    c1 = cellsOnEdge[bnd_e, 1]
+    owner = np.where(c0 == 0, c1, c0) - 1  # 0-based owner cell
+    v0 = verticesOnEdge[bnd_e, 0] - 1      # 0-based vertex indices
+    v1 = verticesOnEdge[bnd_e, 1] - 1
+
+    # build upward adjecency from boundary vertices
+    # (triangle element centers) to (polygon cell) edges
+    # on the boundary
+    # this is needed for the adjacency walk over the boundary
+    vtx_to_edges = {}
+    for i in range(len(bnd_e)):
+        for v in (v0[i], v1[i]):
+            vtx_to_edges.setdefault(v, []).append(i)
+
+    # Walk the closed boundary edge chain
+    visited = np.zeros(len(bnd_e), dtype=bool)
+    ordered = []
+    curr = 0
+    entry_vtx = -1
+    while True:
+        visited[curr] = True
+        ordered.append(owner[curr])
+        exit_vtx = v1[curr] if v0[curr] == entry_vtx else v0[curr]
+        moved = False
+        for nxt in vtx_to_edges[exit_vtx]:
+            if not visited[nxt]:
+                entry_vtx = exit_vtx
+                curr = nxt
+                moved = True
+                break
+        if not moved:
+            break
+
+    # Corner cells own two adjacent boundary edges and appear twice
+    # consecutively; keep only the first occurrence.
+    deduped = [ordered[0]]
+    for c in ordered[1:]:
+        if c != deduped[-1]:
+            deduped.append(c)
+    deduped.append(deduped[0])  # close the loop
+    return np.array(deduped)
+
+
+def fit_boundary_splines(self, dsMesh, section):
+    """
+    Extract ordered boundary cell centers from ``dsMesh``, pass them to
+    the boundary-spline binary, and return per-cell geometric classification
+    arrays.
+
+    The binary receives a VTK polyline of boundary cell centers (same format
+    as the contour passed to ``generate2dModel``) and writes:
+
+    * fitted splines in the omegah binary format 
+    * classification, ``dim id`` pair per input primal (triangular) mesh vertex
+      on the boundary, in the omegah binary format
+    * sampled splines in csv format for visualization only
+
+    Parameters
+    ----------
+    self : compass step
+        Provides ``logger`` and ``config``.
+
+    dsMesh : xarray.Dataset
+        MPAS mesh dataset (typically the in-memory ``dehorned.nc`` mesh).
+
+    section : configparser section
+        Config section used to read ``boundary_spline_binary``.
+
+    Returns
+    -------
+    bnd_class_dim : numpy.ndarray, shape (nCells,), dtype int32
+        Geometric model entity dimension for each cell (-1 for
+        non-boundary cells).
+
+    bnd_class_id : numpy.ndarray, shape (nCells,), dtype int32
+        Geometric model entity id for each cell (0 for non-boundary cells).
+    """
+    logger = self.logger
+    binary = section.get('boundary_spline_binary', 'fitBoundarySplines')
+
+    xCell = dsMesh['xCell'].values
+    yCell = dsMesh['yCell'].values
+    bnd_cells = get_ordered_boundary_cells(dsMesh)
+
+    n_unique = len(bnd_cells) - 1
+    bnd_pts = np.column_stack([xCell[bnd_cells], yCell[bnd_cells]])
+    bnd_edges = [(i, (i + 1) % n_unique) for i in range(n_unique)]
+    writeToVtk(bnd_pts, bnd_edges, 'boundary_cells.vtk')
+
+    logger.info('Using Simmetrix generate2dModel to fit splines to the domain boundary')
+    # Get Simmetrix parameters from config (with defaults for GIS)
+    coincident_tol = section.getfloat('simmetrix_coincident_tolerance',
+                                      1.0)
+    angle_tol = section.getfloat('simmetrix_angle_tolerance', 100.0)
+    oncurve_angle_tol = section.getfloat(
+            'simmetrix_oncurve_angle_tolerance', 100.0)
+    units = section.get('simmetrix_units', 'm')
+
+    # Get path to generate2dModel binary
+    # Default to 'generate2dModel' (assumes it's in PATH)
+    # Can be overridden with full path in config
+    simmetrix_binary = section.get('simmetrix_binary',
+                                   'generate2dModel')
+
+    # Call generate2dModel
+    input_vtk = 'boundary_cells.vtk'
+    output_prefix = 'boundary_contour'
+
+    if not os.path.exists(input_vtk):
+        raise FileNotFoundError(f'Input file {input_vtk} not found.')
+
+    args = [simmetrix_binary, input_vtk, output_prefix,
+            str(coincident_tol), str(angle_tol), str(oncurve_angle_tol),
+            '0',  # createMesh = 0 (don't generate mesh)
+            units]
+
+    check_call(args, logger=logger)
+
+    bnd_class_dim = np.full(len(xCell), -1, dtype=np.int32)
+    bnd_class_id = np.zeros(len(xCell), dtype=np.int32)
+#   TODO The following should read the osbh file and a map from the input points to
+#   entries in the file, or something like that...
+#    with open('boundary_cells_classification.txt') as fh:
+#        for pt_idx, line in enumerate(fh):
+#            dim, eid = map(int, line.split())
+#            bnd_class_dim[bnd_cells[pt_idx]] = dim
+#            bnd_class_id[bnd_cells[pt_idx]] = eid
+
+    return bnd_class_dim, bnd_class_id
 
 
 def build_mali_mesh(self, cell_width, x1, y1, geom_points,
                     geom_edges, mesh_name, section_name,
                     gridded_dataset, projection, geojson_file=None,
-                    cores=1, bounding_box=None):
+                    cores=1, bounding_box=None, dist_to_edge=None):
     """
     Create the MALI mesh based on final cell widths determined by
     :py:func:`compass.landice.mesh.build_cell_width()`, using Jigsaw or
@@ -1075,6 +1241,13 @@ def build_mali_mesh(self, cell_width, x1, y1, geom_points,
 
     bounding_box : array_like of float, shape (4,), optional
         Bounding box [x_min, x_max, y_min, y_max] to cull mesh outside of
+
+    dist_to_edge : numpy.ndarray, optional
+        Distance from each gridded dataset point to the ice margin (m),
+        on the x1/y1 grid. When provided, cells are culled based on
+        whether their nearest gridded ``dist_to_edge`` value exceeds
+        ``cull_distance``, rather than using the mesh-based
+        ``define_landice_cull_mask`` approach.
     """
 
     if bounding_box is not None and geojson_file is None:
@@ -1157,11 +1330,48 @@ def build_mali_mesh(self, cell_width, x1, y1, geom_points,
 
     cullDistance = section.get('cull_distance')
     if float(cullDistance) > 0.:
-        args = ['define_landice_cull_mask', '-f',
-                'grid_preCull.nc', '-m',
-                'distance', '-d', cullDistance]
+        if mesh_generator == 'simmetrix' and dist_to_edge is not None:
+            logger.info('Defining cull mask from gridded dist_to_edge field')
+            dsMeshPreCull = xarray.open_dataset('grid_preCull.nc')
+            xCell = dsMeshPreCull['xCell'].values
+            yCell = dsMeshPreCull['yCell'].values
+            # Interpolate dist_to_edge onto mesh cell centers
+            dist_interp = interpn(
+                (y1, x1), dist_to_edge, (yCell, xCell),
+                method='linear', bounds_error=False,
+                fill_value=np.max(dist_to_edge))
+            cull_dist_m = float(cullDistance) * 1.0e3
+            # Interior cells have negative dist_interp, so the threshold
+            # comparison alone excludes them from culling.
+            cullCell = (dist_interp > cull_dist_m).astype(np.int32)
 
-        check_call(args, logger=logger)
+            # Ensure culled region is topologically connected to the
+            # domain boundary. Isolated culled patches within the buffer
+            # region are un-culled so there are no holes in the retained
+            # mesh.
+            cellsOnCell = dsMeshPreCull['cellsOnCell'].values
+            nEdgesOnCell = dsMeshPreCull['nEdgesOnCell'].values
+            maxEdges = cellsOnCell.shape[1]
+            col_idx = np.arange(maxEdges)
+            valid_edge = (col_idx[np.newaxis, :] <
+                          nEdgesOnCell[:, np.newaxis])
+            boundary_mask = np.any(
+                (cellsOnCell == 0) & valid_edge,
+                axis=1).astype(np.int32)
+            seed_mask = (boundary_mask & cullCell).astype(np.int32)
+            cullCell = mpas_flood_fill(seed_mask, cullCell,
+                                       cellsOnCell, nEdgesOnCell)
+
+            dsMeshPreCull['cullCell'] = xarray.DataArray(
+                cullCell, dims=['nCells'])
+            write_netcdf(dsMeshPreCull, 'grid_preCull.nc')
+            dsMeshPreCull.close()
+        else:
+            args = ['define_landice_cull_mask', '-f',
+                    'grid_preCull.nc', '-m',
+                    'distance', '-d', cullDistance]
+
+            check_call(args, logger=logger)
     else:
         logger.info('cullDistance <= 0 in config file. '
                     'Will not cull by distance to margin. \n')
@@ -1211,6 +1421,10 @@ def build_mali_mesh(self, cell_width, x1, y1, geom_points,
     dsMesh = sort_mesh(dsMesh)
     write_netcdf(dsMesh, 'dehorned.nc')
 
+    if mesh_generator == 'simmetrix':
+        bnd_class_dim, bnd_class_id = fit_boundary_splines(
+            self, dsMesh, section)
+
     args = ['create_landice_grid_from_generic_mpas_grid', '-i',
             'dehorned.nc', '-o',
             mesh_name, '-l', levels, '-v', 'glimmer',
@@ -1222,6 +1436,15 @@ def build_mali_mesh(self, cell_width, x1, y1, geom_points,
             gridded_dataset, '-d', mesh_name, '-m', 'b']
 
     check_call(args, logger=logger)
+
+    if mesh_generator == 'simmetrix':
+        dsMeshFinal = xarray.open_dataset(mesh_name)
+        dsMeshFinal['boundaryClassDim'] = xarray.DataArray(
+            bnd_class_dim, dims=['nCells'])
+        dsMeshFinal['boundaryClassId'] = xarray.DataArray(
+            bnd_class_id, dims=['nCells'])
+        write_netcdf(dsMeshFinal, mesh_name)
+        dsMeshFinal.close()
 
     logger.info('Marking domain boundaries dirichlet')
     args = ['mark_domain_boundaries_dirichlet',
