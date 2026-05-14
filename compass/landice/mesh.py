@@ -513,20 +513,42 @@ def writeContoursToVtk(contour, file):
 
     mesh.write(file)
 
-def writeToVtk(points, edges, filename):
-    """Writes a VTK mesh file from the given contour
-       (points and edges)."""
+def writeToVtk(points, edges, filename, point_data=None,
+               point_data_name='vertexId'):
+    """Writes a VTK mesh file from the given contour (points and edges).
+
+    Parameters
+    ----------
+    points : array-like, shape (N+1, 2)
+        Closed contour; the last point (repeat of first) is dropped.
+    edges : list of (int, int)
+        Local point-index pairs forming polyline edges.
+    filename : str
+        Output file path.
+    point_data : array-like of int, optional
+        Per-point scalar values (length N, matching the written points).
+        Written as VTK POINT_DATA SCALARS with dtype int.
+    point_data_name : str, optional
+        VTK scalar name for ``point_data`` (default ``'vertexId'``).
+    """
+    n = len(points[:-1])
     lines = ['# vtk DataFile Version 3.0\n',
              f'{filename} written by compass/landice/mesh.py\n',
              'ASCII\n',
              'DATASET POLYDATA\n\n',
-             f'POINTS {len(points[:-1])} float\n']
+             f'POINTS {n} float\n']
 
     for pt in points[:-1]:
         lines.append(f'{pt[0]} {pt[1]} 0.0\n')
     lines.append(f'\nLINES {len(edges)} {len(edges)*3}\n')
     for edge in edges:
         lines.append(f'2 {edge[0]} {edge[1]}\n')
+    if point_data is not None:
+        lines.append(f'\nPOINT_DATA {n}\n')
+        lines.append(f'SCALARS {point_data_name} int 1\n')
+        lines.append('LOOKUP_TABLE default\n')
+        for val in point_data:
+            lines.append(f'{val}\n')
     with open(filename, "w") as f:
         f.writelines(lines)
 
@@ -1130,9 +1152,11 @@ def fit_boundary_splines(self, dsMesh, section):
     bnd_cells = get_ordered_boundary_cells(dsMesh)
 
     n_unique = len(bnd_cells) - 1
+    vert_ids = bnd_cells[:-1]  # 0-based tri-mesh vertex ID per boundary point
     bnd_pts = np.column_stack([xCell[bnd_cells], yCell[bnd_cells]])
     bnd_edges = [(i, (i + 1) % n_unique) for i in range(n_unique)]
-    writeToVtk(bnd_pts, bnd_edges, 'boundary_cells.vtk')
+    writeToVtk(bnd_pts, bnd_edges, 'boundary_cells.vtk',
+               point_data=vert_ids)
 
     logger.info('Using Simmetrix generate2dModel to fit splines to the domain boundary')
     # Get Simmetrix parameters from config (with defaults for GIS)
