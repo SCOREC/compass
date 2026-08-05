@@ -4,6 +4,8 @@ import sys
 import time
 from shutil import copyfile
 
+import json
+
 import jigsawpy
 import meshio
 import mpas_tools.io
@@ -11,11 +13,15 @@ import numpy as np
 import xarray
 from geometric_features import FeatureCollection, GeometricFeatures
 from mpas_tools.io import write_netcdf
+from mpas_tools.landice.projections import projections as landice_projections
 from mpas_tools.logging import check_call
 from mpas_tools.mesh.conversion import convert, cull
 from mpas_tools.mesh.creation import build_planar_mesh
 from mpas_tools.mesh.creation.sort_mesh import sort_mesh
 from netCDF4 import Dataset
+from pyproj import Transformer
+from shapely.geometry import shape
+from shapely.vectorized import contains
 from skimage.measure import find_contours
 from scipy.interpolate import NearestNDInterpolator, interpn
 from scipy import ndimage
@@ -300,6 +306,54 @@ def clip_mesh_to_bounding_box(mask_ds, base_ds, bounding_box):
         mask_ds[mask_var] = xarray.where(mask, 0, mask_ds[mask_var])
 
     return mask_ds
+
+
+def rasterize_geojson_mask(geojson_file, x1, y1, projection):
+    """
+    Rasterize a single-polygon geojson region (defined in lon/lat) onto a
+    structured x1/y1 grid, so the region can be intersected with other
+    gridded fields (e.g. ``dist_to_edge``) before contour extraction,
+    rather than being applied as a separate cull pass on the mesh.
+
+    Parameters
+    ----------
+    geojson_file : str
+        Path to a geojson file containing a single Polygon feature in
+        lon/lat (CRS84).
+
+    x1 : numpy.ndarray
+        x coordinates of the structured grid (planar projection).
+
+    y1 : numpy.ndarray
+        y coordinates of the structured grid (planar projection).
+
+    projection : str
+        Key into ``mpas_tools.landice.projections.projections`` giving the
+        proj4 string of the planar projection used by ``x1``/``y1``.
+
+    Returns
+    -------
+    mask : numpy.ndarray, shape (len(y1), len(x1)), dtype bool
+        ``True`` where the grid point falls inside the geojson polygon.
+    """
+
+    with open(geojson_file) as fh:
+        geojson_dict = json.load(fh)
+
+    polygon_lonlat = shape(geojson_dict['features'][0]['geometry'])
+
+    transformer = Transformer.from_crs(
+        'EPSG:4326', landice_projections[projection], always_xy=True)
+    lon, lat = polygon_lonlat.exterior.coords.xy
+    x_proj, y_proj = transformer.transform(np.asarray(lon), np.asarray(lat))
+
+    polygon_planar = shape({
+        'type': 'Polygon',
+        'coordinates': [list(zip(x_proj, y_proj))],
+    })
+
+    xx, yy = np.meshgrid(x1, y1)
+    return contains(polygon_planar, xx, yy)
 
 
 def set_cell_width(self, section_name, thk, bed=None, vx=None, vy=None,
@@ -1352,6 +1406,12 @@ def build_mali_mesh(self, cell_width, x1, y1, geom_points,
 
     check_call(args, logger=logger)
 
+    # Set when the geojson region mask (and bounding box) have already been
+    # folded into the gridded-distance ``cullCell`` mask below, so the
+    # separate mesh-space geojson cull further down can be skipped for
+    # Simmetrix.
+    geojson_folded_into_cullCell = False
+
     cullDistance = section.get('cull_distance')
     if float(cullDistance) > 0.:
         if mesh_generator == 'simmetrix' and dist_to_edge is not None:
@@ -1368,6 +1428,29 @@ def build_mali_mesh(self, cell_width, x1, y1, geom_points,
             # Interior cells have negative dist_interp, so the threshold
             # comparison alone excludes them from culling.
             cullCell = (dist_interp > cull_dist_m).astype(np.int32)
+
+            if geojson_file is not None:
+                logger.info(
+                    'Combining gridded dist_to_edge cull mask with '
+                    'rasterized geojson region mask')
+                geojson_mask = rasterize_geojson_mask(
+                    geojson_file, x1, y1, projection)
+                geojson_mask_interp = interpn(
+                    (y1, x1), geojson_mask.astype(np.float64),
+                    (yCell, xCell), method='nearest',
+                    bounds_error=False, fill_value=0.0).astype(bool)
+                cullCell = (cullCell.astype(bool) |
+                            ~geojson_mask_interp).astype(np.int32)
+
+            if bounding_box is not None:
+                outside_bbox = (
+                    (xCell < bounding_box[0]) |
+                    (xCell > bounding_box[1]) |
+                    (yCell < bounding_box[2]) |
+                    (yCell > bounding_box[3])
+                )
+                cullCell = (cullCell.astype(bool) |
+                            outside_bbox).astype(np.int32)
 
             # Ensure culled region is topologically connected to the
             # domain boundary. Isolated culled patches within the buffer
@@ -1390,6 +1473,7 @@ def build_mali_mesh(self, cell_width, x1, y1, geom_points,
                 cullCell, dims=['nCells'])
             write_netcdf(dsMeshPreCull, 'grid_preCull.nc')
             dsMeshPreCull.close()
+            geojson_folded_into_cullCell = True
         else:
             args = ['define_landice_cull_mask', '-f',
                     'grid_preCull.nc', '-m',
@@ -1400,9 +1484,12 @@ def build_mali_mesh(self, cell_width, x1, y1, geom_points,
         logger.info('cullDistance <= 0 in config file. '
                     'Will not cull by distance to margin. \n')
 
-    if geojson_file is not None:
+    if geojson_file is not None and not geojson_folded_into_cullCell:
         # This step is only necessary because the GeoJSON region
-        # is defined by lat-lon.
+        # is defined by lat-lon. For Simmetrix, this is skipped when the
+        # geojson region has already been rasterized onto the structured
+        # grid and folded into the gridded-distance ``cullCell`` mask
+        # above.
         args = ['set_lat_lon_fields_in_planar_grid', '-f',
                 'grid_preCull.nc', '-p', projection]
 
@@ -1421,7 +1508,7 @@ def build_mali_mesh(self, cell_width, x1, y1, geom_points,
         logger.info('culling to geojson file')
 
     dsMesh = xarray.open_dataset('grid_preCull.nc')
-    if geojson_file is not None:
+    if geojson_file is not None and not geojson_folded_into_cullCell:
         mask = xarray.open_dataset('mask.nc')
 
         if bounding_box is not None:
