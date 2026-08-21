@@ -1442,12 +1442,13 @@ def build_mali_mesh(self, cell_width, x1, y1, geom_points,
                 cullCell = (cullCell.astype(bool) |
                             ~geojson_mask_interp).astype(np.int32)
 
+            breakpoint()
             if bounding_box is not None:
                 outside_bbox = (
-                    (xCell < bounding_box[0]) |
-                    (xCell > bounding_box[1]) |
-                    (yCell < bounding_box[2]) |
-                    (yCell > bounding_box[3])
+                    (xCell < bounding_box[0].item()) |
+                    (xCell > bounding_box[1].item()) |
+                    (yCell < bounding_box[2].item()) |
+                    (yCell > bounding_box[3].item())
                 )
                 cullCell = (cullCell.astype(bool) |
                             outside_bbox).astype(np.int32)
