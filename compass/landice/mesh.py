@@ -196,62 +196,6 @@ def set_rectangular_geom_points_and_edges(xmin, xmax, ymin, ymax):
 
     return geom_points, geom_edges
 
-def append_contour(tag, contour, geom_points, geom_edges):
-    """
-    Combine the Jigsaw lists of points and edges that define the geometric
-    model bounding polygon (``geom_points`` and ``geom_edges``, respectively)
-    with the list of points that define the specified contour
-    (``contour``).
-
-    Parameters
-    ----------
-    tag : integer
-        id assigned to the edges from contour in jigsaw
-
-    contour : np.array
-        array of tuples defining (x,y) coordinates of geometric model vertices
-        points such that (1) edges are defined by adjacent pairs of points
-        starting from the first (i.e.,
-        ``edge 0 = (contour[0],contour[1])``)
-        and (2) the first and last points are the same so that a closed loop
-        is formed.
-
-    geom_points : array, dtype=jigsawpy.jigsaw_msh_t.VERT2_t
-        points defining the bounding polygon of the domain
-
-    geom_edges : array, dtype=jigsawpy.jigsaw_msh_t.EDGE2_t
-        edges defining the bounding polygon of the domain
-
-    Returns
-    -------
-    points : numpy.array, dtype=jigsawpy.jigsaw_msh_t.VERT2_t
-        contains the bounding points from ``geom_points`` followed by the
-        points from ``contour``
-
-    edges : numpy.array, dtype=jigsawpy.jigsaw_msh_t.EDGE2_t
-        contains the edges from ``geom_edges`` followed by ``contour`` using
-        point indices from ``points``
-    """
-
-    # assert that there is a loop
-    assert (contour[0] == contour[-1]).all()
-    geom_points_notag = []
-    for pt in geom_points:
-        geom_points_notag.append(pt[0])
-    points_ar = np.concatenate((geom_points_notag, contour))
-
-    first_gl_pt = +4
-    last_gl_pt = first_gl_pt + len(contour[:-1])
-    indices = [i for i in range(first_gl_pt, last_gl_pt)]
-    indices.append(first_gl_pt)
-    gl_edges = list(zip(indices[:-1], indices[1:]))
-    geom_edges_notag = []
-    for pt in geom_edges:
-        geom_edges_notag.append(pt[0])
-    edges_ar = np.concatenate((geom_edges_notag, gl_edges))
-
-    return points_ar, edges_ar
-
 
 def clip_mesh_to_bounding_box(mask_ds, base_ds, bounding_box):
     """
@@ -1053,9 +997,16 @@ def build_cell_width(self, section_name, gridded_dataset,
                                                   name="edge")
     edge_notri_contour = remove_triangles(edge_nocoin_contour, name="edge")
 
-    all_points, all_edges = append_contour(3, edge_notri_contour,
-                                           geom_points, geom_edges)
-    writeToVtk(all_points, all_edges, "edge_wBbox.vtk")
+    # Write the ice-margin contour and the domain bounding box as separate
+    # nested contours (inner and outer, respectively) for generate2dModel,
+    # rather than merging them into a single combined contour.
+    bbox_points = [pt[0] for pt in geom_points]
+    bbox_points.append(bbox_points[0])  # close the loop
+    bbox_edges = [pt[0] for pt in geom_edges]
+    writeToVtk(np.array(bbox_points), bbox_edges, "bbox.vtk")
+    edge_edges = list(zip(range(len(edge_notri_contour) - 1),
+                          range(1, len(edge_notri_contour))))
+    writeToVtk(edge_notri_contour, edge_edges, "edge.vtk")
 
     # Sign distToEdge: interior (flood_mask==1) is negative, exterior positive.
     # Must come after distToEdge_ff, which requires unsigned values as barriers.
@@ -1096,11 +1047,11 @@ def build_cell_width(self, section_name, gridded_dataset,
             distToEdge)
 
 
-def get_ordered_boundary_cells(dsMesh):
+def get_ordered_boundary_vertices(dsMesh):
     """
     Walk boundary edges to return a closed, ordered sequence of 0-based
-    boundary cell indices.  Corner cells (those with two boundary edges)
-    appear once; the first index is repeated at the end to close the loop.
+    primal-mesh (triangular) vertex indices, i.e. ``nVertices`` indices,
+    tracing the boundary of the surviving mesh.
 
     Parameters
     ----------
@@ -1110,8 +1061,8 @@ def get_ordered_boundary_cells(dsMesh):
     Returns
     -------
     ordered : numpy.ndarray
-        0-based cell indices of length N+1 where N is the number of unique
-        boundary cells and ``ordered[0] == ordered[-1]``.
+        0-based vertex indices of length N+1 where N is the number of
+        unique boundary vertices and ``ordered[0] == ordered[-1]``.
     """
     cellsOnEdge = dsMesh['cellsOnEdge'].values      # (nEdges, 2), 1-based
     verticesOnEdge = dsMesh['verticesOnEdge'].values  # (nEdges, 2), 1-based
@@ -1120,30 +1071,25 @@ def get_ordered_boundary_cells(dsMesh):
     is_bnd = np.any(cellsOnEdge == 0, axis=1)
     bnd_e = np.where(is_bnd)[0]
 
-    c0 = cellsOnEdge[bnd_e, 0]
-    c1 = cellsOnEdge[bnd_e, 1]
-    owner = np.where(c0 == 0, c1, c0) - 1  # 0-based owner cell
     v0 = verticesOnEdge[bnd_e, 0] - 1      # 0-based vertex indices
     v1 = verticesOnEdge[bnd_e, 1] - 1
 
-    # build upward adjecency from boundary vertices
-    # (triangle element centers) to (polygon cell) edges
-    # on the boundary
-    # this is needed for the adjacency walk over the boundary
+    # Each boundary vertex is shared by exactly two boundary edges, so
+    # this adjacency is enough to walk the closed boundary loop.
     vtx_to_edges = {}
     for i in range(len(bnd_e)):
         for v in (v0[i], v1[i]):
             vtx_to_edges.setdefault(v, []).append(i)
 
-    # Walk the closed boundary edge chain
+    # Walk the closed boundary edge chain, recording vertices.
     visited = np.zeros(len(bnd_e), dtype=bool)
-    ordered = []
+    ordered = [v0[0]]
     curr = 0
-    entry_vtx = -1
+    entry_vtx = v0[0]
     while True:
         visited[curr] = True
-        ordered.append(owner[curr])
         exit_vtx = v1[curr] if v0[curr] == entry_vtx else v0[curr]
+        ordered.append(exit_vtx)
         moved = False
         for nxt in vtx_to_edges[exit_vtx]:
             if not visited[nxt]:
@@ -1154,26 +1100,26 @@ def get_ordered_boundary_cells(dsMesh):
         if not moved:
             break
 
-    # Corner cells own two adjacent boundary edges and appear twice
-    # consecutively; keep only the first occurrence.
-    deduped = [ordered[0]]
-    for c in ordered[1:]:
-        if c != deduped[-1]:
-            deduped.append(c)
-    deduped.append(deduped[0])  # close the loop
-    return np.array(deduped)
+    return np.array(ordered)
 
 
 def fit_boundary_splines(self, dsMesh, section):
     """
-    Extract ordered boundary cell centers from ``dsMesh``, pass them to
-    the boundary-spline binary, and return per-cell geometric classification
-    arrays.
+    Fit splines to the domain boundary contour and return per-vertex
+    geometric classification arrays for ``dsMesh``.
 
-    The binary receives a VTK polyline of boundary cell centers (same format
-    as the contour passed to ``generate2dModel``) and writes:
+    Two nested contours are passed to ``generate2dModel``: the original
+    ``edge.vtk`` ice-margin contour (inner, ``order=0``) that was used for
+    the original meshing call, and the boundary of the current
+    (culled/dehorned) primal mesh, walked from ``dsMesh`` and written out
+    as a contour file (outer, ``order=1``). Fitting against both lets the
+    splines reflect the mesh's actual current boundary while remaining
+    anchored to the original contour geometry it was triangulated against.
 
-    * fitted splines in the omegah binary format 
+    The binary receives both contours via repeated ``--contour`` flags and
+    writes:
+
+    * fitted splines in the omegah binary format
     * classification, ``dim id`` pair per input primal (triangular) mesh vertex
       on the boundary, in the omegah binary format
     * sampled splines in csv format for visualization only
@@ -1191,28 +1137,30 @@ def fit_boundary_splines(self, dsMesh, section):
 
     Returns
     -------
-    bnd_class_dim : numpy.ndarray, shape (nCells,), dtype int32
-        Geometric model entity dimension for each cell (-1 for
-        non-boundary cells).
+    bnd_class_dim : numpy.ndarray, shape (nVertices,), dtype int32
+        Geometric model entity dimension for each vertex (-1 for
+        non-boundary vertices).
 
-    bnd_class_id : numpy.ndarray, shape (nCells,), dtype int32
-        Geometric model entity id for each cell (0 for non-boundary cells).
+    bnd_class_id : numpy.ndarray, shape (nVertices,), dtype int32
+        Geometric model entity id for each vertex (0 for non-boundary
+        vertices).
     """
     logger = self.logger
     binary = section.get('boundary_spline_binary', 'fitBoundarySplines')
 
-    xCell = dsMesh['xCell'].values
-    yCell = dsMesh['yCell'].values
-    bnd_cells = get_ordered_boundary_cells(dsMesh)
+    xVertex = dsMesh['xVertex'].values
+    yVertex = dsMesh['yVertex'].values
+    bnd_verts = get_ordered_boundary_vertices(dsMesh)
 
-    n_unique = len(bnd_cells) - 1
-    vert_ids = bnd_cells[:-1]  # 0-based tri-mesh vertex ID per boundary point
-    bnd_pts = np.column_stack([xCell[bnd_cells], yCell[bnd_cells]])
+    n_unique = len(bnd_verts) - 1
+    vert_ids = bnd_verts[:-1]  # 0-based tri-mesh vertex ID per boundary point
+    bnd_pts = np.column_stack([xVertex[bnd_verts], yVertex[bnd_verts]])
     bnd_edges = [(i, (i + 1) % n_unique) for i in range(n_unique)]
-    writeToVtk(bnd_pts, bnd_edges, 'boundary_cells.vtk',
-               point_data=vert_ids)
+    walked_vtk = 'boundary_cells.vtk'
+    writeToVtk(bnd_pts, bnd_edges, walked_vtk, point_data=vert_ids)
 
-    logger.info('Using Simmetrix generate2dModel to fit splines to the domain boundary')
+    logger.info('Using Simmetrix generate2dModel to fit splines to the '
+                'domain boundary')
     # Get Simmetrix parameters from config (with defaults for GIS)
     coincident_tol = section.getfloat('simmetrix_coincident_tolerance',
                                       1.0)
@@ -1227,29 +1175,35 @@ def fit_boundary_splines(self, dsMesh, section):
     simmetrix_binary = section.get('simmetrix_binary',
                                    'generate2dModel')
 
-    # Call generate2dModel
-    input_vtk = 'boundary_cells.vtk'
+    # Original ice-margin contour used for the meshing call (inner), and
+    # the walked boundary of the current dehorned mesh (outer).
+    edge_vtk = 'edge.vtk'
     output_prefix = 'boundary_contour'
 
-    if not os.path.exists(input_vtk):
-        raise FileNotFoundError(f'Input file {input_vtk} not found.')
+    if not os.path.exists(edge_vtk):
+        raise FileNotFoundError(
+            f'Input file {edge_vtk} not found. Ensure '
+            'build_cell_width() was called first to create this file.')
 
-    args = [simmetrix_binary, input_vtk, output_prefix,
+    args = [simmetrix_binary,
+            '--contour', f'file={edge_vtk},order=0,units={units}',
+            '--contour', f'file={walked_vtk},order=1,units={units}',
+            output_prefix,
             str(coincident_tol), str(angle_tol), str(oncurve_angle_tol),
-            '0',  # createMesh = 0 (don't generate mesh)
-            units]
+            '0']  # createMesh = 0 (don't generate mesh)
 
     check_call(args, logger=logger)
 
-    bnd_class_dim = np.full(len(xCell), -1, dtype=np.int32)
-    bnd_class_id = np.zeros(len(xCell), dtype=np.int32)
+    nVertices = dsMesh.sizes['nVertices']
+    bnd_class_dim = np.full(nVertices, -1, dtype=np.int32)
+    bnd_class_id = np.zeros(nVertices, dtype=np.int32)
 #   TODO The following should read the osbh file and a map from the input points to
 #   entries in the file, or something like that...
 #    with open('boundary_cells_classification.txt') as fh:
 #        for pt_idx, line in enumerate(fh):
 #            dim, eid = map(int, line.split())
-#            bnd_class_dim[bnd_cells[pt_idx]] = dim
-#            bnd_class_id[bnd_cells[pt_idx]] = eid
+#            bnd_class_dim[bnd_verts[pt_idx]] = dim
+#            bnd_class_id[bnd_verts[pt_idx]] = eid
 
     return bnd_class_dim, bnd_class_id
 
@@ -1358,19 +1312,25 @@ def build_mali_mesh(self, cell_width, x1, y1, geom_points,
         simmetrix_binary = section.get('simmetrix_binary',
                                         'generate2dModel')
 
-        # Call generate2dModel
-        input_vtk = 'edge_wBbox.vtk'
+        # Call generate2dModel with the ice-margin contour (inner) and the
+        # domain bounding box (outer) as two separate nested contours.
+        edge_vtk = 'edge.vtk'
+        bbox_vtk = 'bbox.vtk'
         output_prefix = 'edge_wBbox'
 
-        if not os.path.exists(input_vtk):
-            raise FileNotFoundError(
-                f'Input file {input_vtk} not found. Ensure '
-                'build_cell_width() was called first to create this file.')
+        for input_vtk in (edge_vtk, bbox_vtk):
+            if not os.path.exists(input_vtk):
+                raise FileNotFoundError(
+                    f'Input file {input_vtk} not found. Ensure '
+                    'build_cell_width() was called first to create this '
+                    'file.')
 
-        args = [simmetrix_binary, input_vtk, output_prefix,
+        args = [simmetrix_binary,
+                '--contour', f'file={edge_vtk},order=0,units={units}',
+                '--contour', f'file={bbox_vtk},order=1,units={units}',
+                output_prefix,
                 str(coincident_tol), str(angle_tol), str(oncurve_angle_tol),
-                '1',  # createMesh = 1 (generate mesh)
-                units]
+                '1']  # createMesh = 1 (generate mesh)
 
         check_call(args, logger=logger)
 
@@ -1521,15 +1481,37 @@ def build_mali_mesh(self, cell_width, x1, y1, geom_points,
     dsMesh = cull(dsMesh, dsInverse=mask, logger=logger)
     write_netcdf(dsMesh, 'culled.nc')
 
-    logger.info('Marking horns for culling')
-    args = ['mark_horns_for_culling', '-f', 'culled.nc']
-
-    check_call(args, logger=logger)
-
-    logger.info('culling, converting, and sorting')
+    # Removing horn cells (cells with two or fewer neighbors) can demote a
+    # neighboring cell to two or fewer neighbors, creating a new horn, so
+    # mark-and-cull is repeated until no horns remain.
     dsMesh = xarray.open_dataset('culled.nc')
-    dsMesh = cull(dsMesh, logger=logger)
-    dsMesh = convert(dsMesh, logger=logger)
+    max_horn_passes = 10
+    horn_pass = 0
+    while True:
+        cellsOnCell = dsMesh['cellsOnCell'].values
+        nEdgesOnCell = dsMesh['nEdgesOnCell'].values
+        maxEdges = cellsOnCell.shape[1]
+        col_idx = np.arange(maxEdges)
+        valid_edge = col_idx[np.newaxis, :] < nEdgesOnCell[:, np.newaxis]
+        nNeighbors = np.sum((cellsOnCell > 0) & valid_edge, axis=1)
+        nHorns = int(np.sum(nNeighbors <= 2))
+        if nHorns == 0:
+            break
+        if horn_pass >= max_horn_passes:
+            raise RuntimeError(
+                f'Horn removal did not converge after '
+                f'{max_horn_passes} passes; {nHorns} horn cells remain.')
+        horn_pass += 1
+        logger.info(f'Marking and culling horns, pass {horn_pass}: '
+                    f'{nHorns} horn cells found')
+        write_netcdf(dsMesh, 'culled.nc')
+        args = ['mark_horns_for_culling', '-f', 'culled.nc']
+        check_call(args, logger=logger)
+        dsMesh = xarray.open_dataset('culled.nc')
+        dsMesh = cull(dsMesh, logger=logger)
+        dsMesh = convert(dsMesh, logger=logger)
+
+    logger.info('sorting mesh')
     dsMesh = sort_mesh(dsMesh)
     write_netcdf(dsMesh, 'dehorned.nc')
 
@@ -1552,9 +1534,9 @@ def build_mali_mesh(self, cell_width, x1, y1, geom_points,
     if mesh_generator == 'simmetrix':
         dsMeshFinal = xarray.open_dataset(mesh_name)
         dsMeshFinal['boundaryClassDim'] = xarray.DataArray(
-            bnd_class_dim, dims=['nCells'])
+            bnd_class_dim, dims=['nVertices'])
         dsMeshFinal['boundaryClassId'] = xarray.DataArray(
-            bnd_class_id, dims=['nCells'])
+            bnd_class_id, dims=['nVertices'])
         write_netcdf(dsMeshFinal, mesh_name)
         dsMeshFinal.close()
 
