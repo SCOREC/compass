@@ -1088,11 +1088,17 @@ def build_cell_width(self, section_name, gridded_dataset,
             distToEdge)
 
 
-def get_ordered_boundary_vertices(dsMesh):
+def get_ordered_boundary_cells(dsMesh):
     """
     Walk boundary edges to return a closed, ordered sequence of 0-based
-    primal-mesh (triangular) vertex indices, i.e. ``nVertices`` indices,
-    tracing the boundary of the surviving mesh.
+    cell indices, i.e. ``nCells`` indices. In MPAS's dual-mesh layout,
+    ``xCell``/``yCell`` are the actual primal (triangular) mesh vertex
+    (corner) points -- ``xVertex``/``yVertex`` are the triangle
+    circumcenters (dual/Voronoi vertices) -- so this traces the boundary
+    of the surviving primal mesh in terms of its true corner points.
+
+    Corner cells (those with two boundary edges) appear once; the first
+    index is repeated at the end to close the loop.
 
     Parameters
     ----------
@@ -1102,8 +1108,8 @@ def get_ordered_boundary_vertices(dsMesh):
     Returns
     -------
     ordered : numpy.ndarray
-        0-based vertex indices of length N+1 where N is the number of
-        unique boundary vertices and ``ordered[0] == ordered[-1]``.
+        0-based cell indices of length N+1 where N is the number of
+        unique boundary cells and ``ordered[0] == ordered[-1]``.
     """
     cellsOnEdge = dsMesh['cellsOnEdge'].values      # (nEdges, 2), 1-based
     verticesOnEdge = dsMesh['verticesOnEdge'].values  # (nEdges, 2), 1-based
@@ -1112,25 +1118,28 @@ def get_ordered_boundary_vertices(dsMesh):
     is_bnd = np.any(cellsOnEdge == 0, axis=1)
     bnd_e = np.where(is_bnd)[0]
 
-    v0 = verticesOnEdge[bnd_e, 0] - 1      # 0-based vertex indices
-    v1 = verticesOnEdge[bnd_e, 1] - 1
+    c0 = cellsOnEdge[bnd_e, 0]
+    c1 = cellsOnEdge[bnd_e, 1]
+    owner = np.where(c0 == 0, c1, c0) - 1  # 0-based owner cell
+    v0 = verticesOnEdge[bnd_e, 0] - 1      # 0-based dual-vertex indices,
+    v1 = verticesOnEdge[bnd_e, 1] - 1      # used only for the edge walk
 
-    # Each boundary vertex is shared by exactly two boundary edges, so
-    # this adjacency is enough to walk the closed boundary loop.
+    # Build adjacency from boundary dual-vertices (used only to identify
+    # which boundary edges are connected) to boundary edges.
     vtx_to_edges = {}
     for i in range(len(bnd_e)):
         for v in (v0[i], v1[i]):
             vtx_to_edges.setdefault(v, []).append(i)
 
-    # Walk the closed boundary edge chain, recording vertices.
+    # Walk the closed boundary edge chain, recording owner cells.
     visited = np.zeros(len(bnd_e), dtype=bool)
-    ordered = [v0[0]]
+    ordered = []
     curr = 0
-    entry_vtx = v0[0]
+    entry_vtx = -1
     while True:
         visited[curr] = True
+        ordered.append(owner[curr])
         exit_vtx = v1[curr] if v0[curr] == entry_vtx else v0[curr]
-        ordered.append(exit_vtx)
         moved = False
         for nxt in vtx_to_edges[exit_vtx]:
             if not visited[nxt]:
@@ -1141,12 +1150,19 @@ def get_ordered_boundary_vertices(dsMesh):
         if not moved:
             break
 
-    return np.array(ordered)
+    # Corner cells own two adjacent boundary edges and appear twice
+    # consecutively; keep only the first occurrence.
+    deduped = [ordered[0]]
+    for c in ordered[1:]:
+        if c != deduped[-1]:
+            deduped.append(c)
+    deduped.append(deduped[0])  # close the loop
+    return np.array(deduped)
 
 
 def fit_boundary_splines(self, dsMesh, section):
     """
-    Fit splines to the domain boundary contour and return per-vertex
+    Fit splines to the domain boundary contour and return per-cell
     geometric classification arrays for ``dsMesh``.
 
     Two nested contours are passed to ``generate2dModel``: the original
@@ -1157,20 +1173,26 @@ def fit_boundary_splines(self, dsMesh, section):
     splines reflect the mesh's actual current boundary while remaining
     anchored to the original contour geometry it was triangulated against.
 
-    All primal (triangular) mesh cells that touch a boundary vertex are
+    All primal (triangular) mesh cells that touch a boundary cell are
     also passed to ``generate2dModel`` (as a triangle mesh, with the
-    ordered boundary vertices marked), so that classification is done with
+    ordered boundary cells marked), so that classification is done with
     knowledge of the actual boundary triangulation. This ensures the
     dual (Voronoi) mesh built from the classified boundary remains valid,
     rather than only fitting splines to a bare boundary polyline that may
     be inconsistent with the surrounding triangles.
 
+    In MPAS's dual-mesh layout, ``xCell``/``yCell`` (``nCells``) are the
+    actual primal (triangular) mesh corner points, and a primal triangle
+    is indexed by ``nVertices`` with its 3 corner cells given by
+    ``cellsOnVertex``; ``xVertex``/``yVertex`` are the triangle
+    circumcenters (dual/Voronoi vertices), not corner points.
+
     The binary receives both contours via repeated ``--contour`` flags,
     plus the boundary-adjacent triangle mesh, and writes:
 
     * fitted splines in the omegah binary format
-    * classification, ``dim id`` pair per input primal (triangular) mesh vertex
-      on the boundary, in the omegah binary format
+    * classification, ``dim id`` pair per input primal (triangular) mesh
+      corner (cell) on the boundary, in the omegah binary format
     * sampled splines in csv format for visualization only
 
     Parameters
@@ -1186,47 +1208,66 @@ def fit_boundary_splines(self, dsMesh, section):
 
     Returns
     -------
-    bnd_class_dim : numpy.ndarray, shape (nVertices,), dtype int32
-        Geometric model entity dimension for each vertex (-1 for
-        non-boundary vertices).
+    bnd_class_dim : numpy.ndarray, shape (nCells,), dtype int32
+        Geometric model entity dimension for each cell (-1 for
+        non-boundary cells).
 
-    bnd_class_id : numpy.ndarray, shape (nVertices,), dtype int32
-        Geometric model entity id for each vertex (0 for non-boundary
-        vertices).
+    bnd_class_id : numpy.ndarray, shape (nCells,), dtype int32
+        Geometric model entity id for each cell (0 for non-boundary
+        cells).
     """
     logger = self.logger
     binary = section.get('boundary_spline_binary', 'fitBoundarySplines')
 
-    xVertex = dsMesh['xVertex'].values
-    yVertex = dsMesh['yVertex'].values
-    bnd_verts = get_ordered_boundary_vertices(dsMesh)
-    vert_ids = bnd_verts[:-1]  # 0-based tri-mesh vertex ID per boundary point
+    xCell = dsMesh['xCell'].values
+    yCell = dsMesh['yCell'].values
+    bnd_cells_closed = get_ordered_boundary_cells(dsMesh)
+    cell_ids = bnd_cells_closed[:-1]  # 0-based cell ID per boundary point
 
-    # Gather every primal triangle (MPAS cell) that has at least one
-    # boundary vertex as a corner, so generate2dModel can classify the
-    # boundary with knowledge of the actual boundary triangulation. This
-    # is what guarantees the resulting dual (Voronoi) mesh is valid at the
-    # boundary, rather than only fitting splines to a bare boundary
-    # polyline that may be inconsistent with the surrounding triangles.
+    # Gather every primal triangle (indexed by nVertices, with 3 corner
+    # cells in cellsOnVertex) that has at least one boundary cell as a
+    # corner, so generate2dModel can classify the boundary with knowledge
+    # of the actual boundary triangulation. This is what guarantees the
+    # resulting dual (Voronoi) mesh is valid at the boundary, rather than
+    # only fitting splines to a bare boundary polyline that may be
+    # inconsistent with the surrounding triangles.
     cellsOnVertex = dsMesh['cellsOnVertex'].values  # (nVertices, 3), 1-based
-    verticesOnCell = dsMesh['verticesOnCell'].values  # (nCells, maxEdges)
-    bnd_cells = np.unique(cellsOnVertex[vert_ids].ravel())
-    bnd_cells = bnd_cells[bnd_cells > 0] - 1  # drop null entries, 0-base
+    # A 0 entry means no cell there (the triangle touches the outer edge
+    # of the whole mesh domain); such incomplete triangles are excluded
+    # rather than treated as having a corner at cell index -1, which
+    # would otherwise wrap around and falsely draw every such triangle to
+    # the same spurious shared point.
+    has_null_corner = np.any(cellsOnVertex == 0, axis=1)
+    tri_corners = cellsOnVertex - 1  # 0-based corner cells, all triangles
+    is_bnd_corner = np.isin(tri_corners, cell_ids)
+    bnd_tri_mask = np.any(is_bnd_corner, axis=1) & ~has_null_corner
+    tri_cells = tri_corners[bnd_tri_mask]
 
-    tri_vertices = verticesOnCell[bnd_cells, :3] - 1  # 0-based corners
-
-    # Remap to a compact local point set containing only the vertices used
+    # Remap to a compact local point set containing only the cells used
     # by the boundary-adjacent triangles.
-    local_verts, tri_local = np.unique(tri_vertices, return_inverse=True)
-    tri_local = tri_local.reshape(tri_vertices.shape)
-    tri_pts = np.column_stack([xVertex[local_verts], yVertex[local_verts]])
+    local_cells, tri_local = np.unique(tri_cells, return_inverse=True)
+    tri_local = tri_local.reshape(tri_cells.shape)
+    tri_pts = np.column_stack([xCell[local_cells], yCell[local_cells]])
 
-    # -1 for interior vertices; 0-based position in the ordered (CW/CCW)
-    # boundary loop for boundary vertices.
-    boundary_order = np.full(len(local_verts), -1, dtype=np.int32)
-    global_to_local = {g: local for local, g in enumerate(local_verts)}
-    for order, g in enumerate(vert_ids):
-        boundary_order[global_to_local[g]] = order
+    # -1 for interior cells; 0-based position in the ordered (CW/CCW)
+    # boundary loop for boundary cells. Boundary cells not bounding any
+    # triangle in the gathered set are silently skipped, since only cells
+    # that bound a triangle are included in local_cells.
+    global_to_local = {g: local for local, g in enumerate(local_cells)}
+    boundary_order = np.full(len(local_cells), -1, dtype=np.int32)
+    n_excluded = 0
+    for order, g in enumerate(cell_ids):
+        local = global_to_local.get(g)
+        if local is not None:
+            boundary_order[local] = order
+        else:
+            n_excluded += 1
+    if n_excluded > 0:
+        logger.warning(
+            f'{n_excluded} of {len(cell_ids)} boundary cells do not '
+            'bound any triangle and were excluded from boundary_cells.vtk; '
+            'this indicates a dangling boundary cell with no incident '
+            'triangle in the mesh.')
 
     walked_vtk = 'boundary_cells.vtk'
     writeTrianglesToVtk(tri_pts, tri_local, walked_vtk, boundary_order)
@@ -1269,16 +1310,16 @@ def fit_boundary_splines(self, dsMesh, section):
 
     check_call(args, logger=logger)
 
-    nVertices = dsMesh.sizes['nVertices']
-    bnd_class_dim = np.full(nVertices, -1, dtype=np.int32)
-    bnd_class_id = np.zeros(nVertices, dtype=np.int32)
+    nCells = dsMesh.sizes['nCells']
+    bnd_class_dim = np.full(nCells, -1, dtype=np.int32)
+    bnd_class_id = np.zeros(nCells, dtype=np.int32)
 #   TODO The following should read the osbh file and a map from the input points to
 #   entries in the file, or something like that...
 #    with open('boundary_cells_classification.txt') as fh:
 #        for pt_idx, line in enumerate(fh):
 #            dim, eid = map(int, line.split())
-#            bnd_class_dim[bnd_verts[pt_idx]] = dim
-#            bnd_class_id[bnd_verts[pt_idx]] = eid
+#            bnd_class_dim[cell_ids[pt_idx]] = dim
+#            bnd_class_id[cell_ids[pt_idx]] = eid
 
     return bnd_class_dim, bnd_class_id
 
@@ -1608,9 +1649,9 @@ def build_mali_mesh(self, cell_width, x1, y1, geom_points,
     if mesh_generator == 'simmetrix':
         dsMeshFinal = xarray.open_dataset(mesh_name)
         dsMeshFinal['boundaryClassDim'] = xarray.DataArray(
-            bnd_class_dim, dims=['nVertices'])
+            bnd_class_dim, dims=['nCells'])
         dsMeshFinal['boundaryClassId'] = xarray.DataArray(
-            bnd_class_id, dims=['nVertices'])
+            bnd_class_id, dims=['nCells'])
         write_netcdf(dsMeshFinal, mesh_name)
         dsMeshFinal.close()
 
