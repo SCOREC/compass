@@ -1045,8 +1045,8 @@ def build_cell_width(self, section_name, gridded_dataset,
     bbox_points.append(bbox_points[0])  # close the loop
     bbox_edges = [pt[0] for pt in geom_edges]
     writeToVtk(np.array(bbox_points), bbox_edges, "bbox.vtk")
-    edge_edges = list(zip(range(len(edge_notri_contour) - 1),
-                          range(1, len(edge_notri_contour))))
+    n_edge = len(edge_notri_contour) - 1  # last point duplicates the first
+    edge_edges = [(i, (i + 1) % n_edge) for i in range(n_edge)]
     writeToVtk(edge_notri_contour, edge_edges, "edge.vtk")
 
     # Sign distToEdge: interior (flood_mask==1) is negative, exterior positive.
