@@ -550,6 +550,47 @@ def writeToVtk(points, edges, filename, point_data=None,
     with open(filename, "w") as f:
         f.writelines(lines)
 
+def writeTrianglesToVtk(points, triangles, filename, boundary_order,
+                        point_data_name='boundaryOrder'):
+    """Writes a VTK triangle mesh, marking boundary vertices and their
+    ordering around the boundary loop.
+
+    Parameters
+    ----------
+    points : array-like, shape (N, 2)
+        xy coordinates of all mesh vertices.
+    triangles : array-like, shape (M, 3)
+        Local point-index triples forming each triangle.
+    filename : str
+        Output file path.
+    boundary_order : array-like of int, shape (N,)
+        Per-point scalar: -1 for interior (non-boundary) vertices, or the
+        0-based position of the vertex in the ordered (CW or CCW) boundary
+        loop.
+    point_data_name : str, optional
+        VTK scalar name for ``boundary_order``
+        (default ``'boundaryOrder'``).
+    """
+    n = len(points)
+    lines = ['# vtk DataFile Version 3.0\n',
+             f'{filename} written by compass/landice/mesh.py\n',
+             'ASCII\n',
+             'DATASET POLYDATA\n\n',
+             f'POINTS {n} float\n']
+
+    for pt in points:
+        lines.append(f'{pt[0]} {pt[1]} 0.0\n')
+    lines.append(f'\nPOLYGONS {len(triangles)} {len(triangles) * 4}\n')
+    for tri in triangles:
+        lines.append(f'3 {tri[0]} {tri[1]} {tri[2]}\n')
+    lines.append(f'\nPOINT_DATA {n}\n')
+    lines.append(f'SCALARS {point_data_name} int 1\n')
+    lines.append('LOOKUP_TABLE default\n')
+    for val in boundary_order:
+        lines.append(f'{val}\n')
+    with open(filename, "w") as f:
+        f.writelines(lines)
+
 def remove_triangles(contour, name, debug=False):
     """ find sequences of four points where the first
     and last point are the same and remove the second
@@ -1116,8 +1157,16 @@ def fit_boundary_splines(self, dsMesh, section):
     splines reflect the mesh's actual current boundary while remaining
     anchored to the original contour geometry it was triangulated against.
 
-    The binary receives both contours via repeated ``--contour`` flags and
-    writes:
+    All primal (triangular) mesh cells that touch a boundary vertex are
+    also passed to ``generate2dModel`` (as a triangle mesh, with the
+    ordered boundary vertices marked), so that classification is done with
+    knowledge of the actual boundary triangulation. This ensures the
+    dual (Voronoi) mesh built from the classified boundary remains valid,
+    rather than only fitting splines to a bare boundary polyline that may
+    be inconsistent with the surrounding triangles.
+
+    The binary receives both contours via repeated ``--contour`` flags,
+    plus the boundary-adjacent triangle mesh, and writes:
 
     * fitted splines in the omegah binary format
     * classification, ``dim id`` pair per input primal (triangular) mesh vertex
@@ -1151,13 +1200,38 @@ def fit_boundary_splines(self, dsMesh, section):
     xVertex = dsMesh['xVertex'].values
     yVertex = dsMesh['yVertex'].values
     bnd_verts = get_ordered_boundary_vertices(dsMesh)
-
-    n_unique = len(bnd_verts) - 1
     vert_ids = bnd_verts[:-1]  # 0-based tri-mesh vertex ID per boundary point
-    bnd_pts = np.column_stack([xVertex[bnd_verts], yVertex[bnd_verts]])
-    bnd_edges = [(i, (i + 1) % n_unique) for i in range(n_unique)]
+
+    # Gather every primal triangle (MPAS cell) that has at least one
+    # boundary vertex as a corner, so generate2dModel can classify the
+    # boundary with knowledge of the actual boundary triangulation. This
+    # is what guarantees the resulting dual (Voronoi) mesh is valid at the
+    # boundary, rather than only fitting splines to a bare boundary
+    # polyline that may be inconsistent with the surrounding triangles.
+    cellsOnVertex = dsMesh['cellsOnVertex'].values  # (nVertices, 3), 1-based
+    verticesOnCell = dsMesh['verticesOnCell'].values  # (nCells, maxEdges)
+    bnd_cells = np.unique(cellsOnVertex[vert_ids].ravel())
+    bnd_cells = bnd_cells[bnd_cells > 0] - 1  # drop null entries, 0-base
+
+    tri_vertices = verticesOnCell[bnd_cells, :3] - 1  # 0-based corners
+
+    # Remap to a compact local point set containing only the vertices used
+    # by the boundary-adjacent triangles.
+    local_verts, tri_local = np.unique(tri_vertices, return_inverse=True)
+    tri_local = tri_local.reshape(tri_vertices.shape)
+    tri_pts = np.column_stack([xVertex[local_verts], yVertex[local_verts]])
+
+    # -1 for interior vertices; 0-based position in the ordered (CW/CCW)
+    # boundary loop for boundary vertices.
+    boundary_order = np.full(len(local_verts), -1, dtype=np.int32)
+    global_to_local = {g: local for local, g in enumerate(local_verts)}
+    for order, g in enumerate(vert_ids):
+        boundary_order[global_to_local[g]] = order
+
     walked_vtk = 'boundary_cells.vtk'
-    writeToVtk(bnd_pts, bnd_edges, walked_vtk, point_data=vert_ids)
+    writeTrianglesToVtk(tri_pts, tri_local, walked_vtk, boundary_order)
+    sys.exit(f'DEBUG: wrote {walked_vtk}; exiting to inspect output '
+             f'before calling generate2dModel')
 
     logger.info('Using Simmetrix generate2dModel to fit splines to the '
                 'domain boundary')
@@ -1176,7 +1250,8 @@ def fit_boundary_splines(self, dsMesh, section):
                                    'generate2dModel')
 
     # Original ice-margin contour used for the meshing call (inner), and
-    # the walked boundary of the current dehorned mesh (outer).
+    # the boundary-adjacent triangle mesh of the current dehorned mesh,
+    # with ordered boundary vertices marked (outer).
     edge_vtk = 'edge.vtk'
     output_prefix = 'boundary_contour'
 
