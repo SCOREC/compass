@@ -591,6 +591,98 @@ def writeTrianglesToVtk(points, triangles, filename, boundary_order,
     with open(filename, "w") as f:
         f.writelines(lines)
 
+
+def writePolygonVerticesToVtk(points, cell_positions, filename):
+    """Writes explicit polygonal-vertex entries needed to close boundary
+    cells' polygons, for ``generate2dModel`` to append to its output
+    mesh's ``cellsOnVertex``.
+
+    Each entry is a polygonal vertex (MPAS ``xVertex``/``yVertex``/
+    ``cellsOnVertex`` triangle-circumcenter point) that Simmetrix's mesh
+    will not itself reproduce -- e.g. one with a missing (boundary) cell,
+    or one whose 3 owning cells don't form one of the preserved boundary
+    triangles. Owning cells are given as ``local_cells`` indices (matching
+    the point order of the corresponding triangles VTK file written by
+    :py:func:`writeTrianglesToVtk`) rather than coordinates, since
+    coordinate matching is not reliable once points have round-tripped
+    through Simmetrix's unit conversions. This is the same "all_vertices"
+    index space ``generate2dModel`` already tags every boundary-triangle
+    -mesh vertex with, so it covers any real cell referenced by a
+    polygonal vertex, not just cells on the boundary loop itself.
+    ``MpasMeshConverter.x`` reconstructs each cell's full polygon
+    (``verticesOnCell``, etc.) purely from ``cellsOnVertex``, so no
+    per-cell vertex ordering needs to be supplied here.
+
+    Parameters
+    ----------
+    points : array-like, shape (N, 2)
+        xy coordinates of each polygonal vertex entry.
+    cell_positions : array-like of int, shape (N, 3)
+        For each entry, the ``local_cells`` index of each of its (up to 3)
+        owning cells, or -1 where a cell is missing (boundary edge).
+    filename : str
+        Output file path.
+    """
+    n = len(points)
+    lines = ['# vtk DataFile Version 3.0\n',
+             f'{filename} written by compass/landice/mesh.py\n',
+             'ASCII\n',
+             'DATASET POLYDATA\n\n',
+             f'POINTS {n} float\n']
+
+    for pt in points:
+        lines.append(f'{pt[0]} {pt[1]} 0.0\n')
+    lines.append(f'\nPOINT_DATA {n}\n')
+    lines.append('SCALARS boundaryCellLocalIndices int 3\n')
+    lines.append('LOOKUP_TABLE default\n')
+    for triple in cell_positions:
+        lines.append(f'{triple[0]} {triple[1]} {triple[2]}\n')
+    with open(filename, "w") as f:
+        f.writelines(lines)
+
+
+def writeLabeledPolygonsToVtk(points, polygons, point_labels, filename):
+    """Writes a VTK polygon mesh with a per-point integer label, for
+    debugging boundary cell polygon closure.
+
+    Parameters
+    ----------
+    points : array-like, shape (N, 2)
+        xy coordinates of all polygon-vertex points.
+    polygons : list of array-like of int
+        One entry per boundary cell, giving the local point indices of
+        that cell's polygon corners in order.
+    point_labels : array-like of int, shape (N,)
+        Per-point label: -1 if the point has no associated triangle in
+        ``boundary_cells.vtk``, otherwise the index of that triangle
+        (row index into ``bdry_tri``/``tri_local``).
+    filename : str
+        Output file path.
+    """
+    n = len(points)
+    total_index_count = sum(len(poly) for poly in polygons)
+    lines = ['# vtk DataFile Version 3.0\n',
+             f'{filename} written by compass/landice/mesh.py\n',
+             'ASCII\n',
+             'DATASET POLYDATA\n\n',
+             f'POINTS {n} float\n']
+
+    for pt in points:
+        lines.append(f'{pt[0]} {pt[1]} 0.0\n')
+    lines.append(f'\nPOLYGONS {len(polygons)} '
+                 f'{total_index_count + len(polygons)}\n')
+    for poly in polygons:
+        idxs = ' '.join(str(i) for i in poly)
+        lines.append(f'{len(poly)} {idxs}\n')
+    lines.append(f'\nPOINT_DATA {n}\n')
+    lines.append('SCALARS triangleIndex int 1\n')
+    lines.append('LOOKUP_TABLE default\n')
+    for label in point_labels:
+        lines.append(f'{label}\n')
+    with open(filename, "w") as f:
+        f.writelines(lines)
+
+
 def remove_triangles(contour, name, debug=False):
     """ find sequences of four points where the first
     and last point are the same and remove the second
@@ -1162,8 +1254,12 @@ def get_ordered_boundary_cells(dsMesh):
 
 def fit_boundary_splines(self, dsMesh, section):
     """
-    Fit splines to the domain boundary contour and return per-cell
-    geometric classification arrays for ``dsMesh``.
+    Fit splines to the domain boundary contour of ``dsMesh`` and generate
+    the final MALI mesh from the resulting geometric model. The new mesh
+    is built by Simmetrix's ``generate2dModel`` from the original
+    ice-margin contour (inner) and the boundary-adjacent triangles of
+    ``dsMesh`` (outer), so it already has the correct (dehorned/culled)
+    domain shape and requires no further culling.
 
     In MPAS's dual-mesh layout, ``xCell``/``yCell`` (``nCells``) are the
     primal (triangular) mesh corner points, and a triangle
@@ -1177,49 +1273,59 @@ def fit_boundary_splines(self, dsMesh, section):
         Provides ``logger`` and ``config``.
 
     dsMesh : xarray.Dataset
-        MPAS mesh dataset
+        MPAS mesh dataset used only as the source of the domain boundary
+        shape (its own connectivity is not part of the output).
 
     section : configparser section
-        Config section used to read ``boundary_spline_binary``.
+        Config section used to read the Simmetrix parameters.
 
     Returns
     -------
-    bnd_class_dim : numpy.ndarray, shape (nCells,), dtype int32
-        Geometric model entity dimension for each primal (triangular) mesh
-        vertex (-1 for non-boundary primal vertices).
-
-    bnd_class_id : numpy.ndarray, shape (nCells,), dtype int32
-        Geometric model entity id for each primal (triangular) mesh vertex 
-        (0 for non-boundary primal vertices).
+    dsNewMesh : xarray.Dataset
+        The new MPAS mesh produced from the boundary-fitted geometric
+        model, with ``geomModelIdCell``, ``geomModelDimCell``,
+        ``geomModelIdVertex``, and ``geomModelDimVertex`` classification
+        arrays attached.
     """
     logger = self.logger
-    binary = section.get('boundary_spline_binary', 'fitBoundarySplines')
 
     xCell = dsMesh['xCell'].values
     yCell = dsMesh['yCell'].values
     bdry_cells_closed = get_ordered_boundary_cells(dsMesh)
     cell_ids = bdry_cells_closed[:-1]  # 0-based cell ID per boundary point
 
-    # polygonal cells surrounding a polygonal vtx
-    cellsOnVertex = dsMesh['cellsOnVertex'].values 
-    # create mask for incomplete tri (i.e., a polygonal vtx bounding less than 3 cells)
+    # triangle vertices (xCell/yCell) surrounding a polygonal vertex
+    cellsOnVertex = dsMesh['cellsOnVertex'].values
+    # mask for incomplete polygonal vertices (bounding fewer than 3
+    # triangle vertices, i.e. at the domain boundary)
     incomplete_tri = np.any(cellsOnVertex == 0, axis=1)
     cellsOnVertexZB = cellsOnVertex - 1  # 0-based index
-    # mask for boundary polygonal cells (triangle verts)
+    # mask for boundary-loop triangle vertices
     is_bdry_cell = np.isin(cellsOnVertexZB, cell_ids)
-    # mask for complete triangles with any tri vertex (polygonal cell) on the boundary
-    bdry_tri_mask = np.any(is_bdry_cell, axis=1) & ~incomplete_tri
+    # mask for any polygonal vertex (complete triangle or incomplete) with
+    # any triangle vertex on the boundary loop
+    is_any_bdry_cell = np.any(is_bdry_cell, axis=1)
+    # mask for complete triangles with any triangle vertex on the boundary
+    bdry_tri_mask = is_any_bdry_cell & ~incomplete_tri
     bdry_tri = cellsOnVertexZB[bdry_tri_mask]
 
-    # Remap to a compact local point set containing only the cells used
-    # by the boundary-adjacent triangles.
-    local_cells, tri_local = np.unique(bdry_tri, return_inverse=True)
-    tri_local = tri_local.reshape(bdry_tri.shape)
+    # Remap to a compact local point set containing every triangle vertex
+    # referenced by any boundary-adjacent polygonal vertex, whether from a
+    # complete (preserved) triangle or an incomplete row -- so
+    # global_to_local can resolve any real triangle vertex a synthetic
+    # entry might need to reference, not just ones that also happen to be
+    # a preserved triangle's corner.
+    bdry_adjacent_tri_verts = cellsOnVertexZB[is_any_bdry_cell]
+    real_tri_verts = bdry_adjacent_tri_verts[bdry_adjacent_tri_verts >= 0]
+    local_cells = np.unique(real_tri_verts)
+    global_to_local = {gid: local_index
+                       for local_index, gid in enumerate(local_cells)}
+    tri_local = np.array(
+        [[global_to_local[c] for c in tri] for tri in bdry_tri],
+        dtype=np.int64).reshape(bdry_tri.shape) if len(bdry_tri) else \
+        np.zeros((0, 3), dtype=np.int64)
     tri_vtx_coords = np.column_stack([xCell[local_cells], yCell[local_cells]])
 
-
-    # create a dictionary from global cell id to local cell id
-    global_to_local = {gid: local_index for local_index, gid in enumerate(local_cells)}
     # store the triangle vtx (polygonal cell) order (0-based) along the contour
     # mark interior verts as -1
     boundary_order = np.full(len(local_cells), -1, dtype=np.int32)
@@ -1237,10 +1343,89 @@ def fit_boundary_splines(self, dsMesh, section):
             'this indicates a dangling boundary cell with no incident '
             'triangle in the mesh.')
 
-    walked_vtk = 'boundary_cells.vtk'
-    writeTrianglesToVtk(tri_vtx_coords, tri_local, walked_vtk, boundary_order)
-    sys.exit(f'DEBUG: wrote {walked_vtk}; exiting to inspect output '
-             f'before calling generate2dModel')
+    bdry_tri_vtk = 'boundary_cells.vtk'
+    writeTrianglesToVtk(tri_vtx_coords, tri_local, bdry_tri_vtk, boundary_order)
+
+    # Simmetrix's mesher only ever produces the preserved boundary
+    # triangles (bdry_tri) plus its own new interior triangles, so a
+    # dsMesh polygonal vertex (cellsOnVertex row) is only reproduced in
+    # the output mesh if it is exactly one of the preserved triangles.
+    # Any other boundary-adjacent polygonal vertex -- one with a missing
+    # (0) cell, or a complete cell triple that doesn't match a preserved
+    # triangle -- has no corresponding triangle in the output and would
+    # leave its cells' polygons unclosed. Write those out explicitly so
+    # generate2dModel can add them to the output mesh's cellsOnVertex.
+    #
+    # Coordinates are not used to identify these polygonal vertices in
+    # generate2dModel (floating point/unit round-tripping through
+    # Simmetrix makes coordinate matching unreliable); instead each
+    # synthetic entry's owning cells are given as local_cells indices
+    # (matching boundary_cells.vtk's POINTS order), the same "all_vertices"
+    # index space generate2dModel already tags every boundary-triangle-mesh
+    # vertex with. local_cells was built above from every triangle vertex
+    # referenced by any boundary-adjacent polygonal vertex (complete or
+    # incomplete), so every real triangle vertex a synthetic entry might
+    # need to reference resolves correctly here.
+    preserved_tri_cellsets = set(frozenset(t) for t in bdry_tri)
+
+    # Debug output: for each boundary cell, its full polygon (from
+    # dsMesh's own verticesOnCell), with each polygon vertex labeled by
+    # the row index into bdry_tri/tri_local of the triangle already
+    # written to boundary_cells.vtk that produces it, or -1 if no such
+    # triangle exists (i.e. this polygon vertex still needs to be
+    # completed by a synthetic entry).
+    row_idx_to_tri_idx = {}
+    for tri_idx, row_idx in enumerate(np.where(bdry_tri_mask)[0]):
+        row_idx_to_tri_idx[row_idx] = tri_idx
+
+    xVertex = dsMesh['xVertex'].values
+    yVertex = dsMesh['yVertex'].values
+    verticesOnCell = dsMesh['verticesOnCell'].values
+    nEdgesOnCell = dsMesh['nEdgesOnCell'].values
+
+    debug_poly_vtx_ids = []
+    for gid in cell_ids:
+        n = nEdgesOnCell[gid]
+        debug_poly_vtx_ids.append(verticesOnCell[gid, :n] - 1)  # 0-based
+
+    all_debug_vtx = np.concatenate(debug_poly_vtx_ids)
+    local_debug_vtx, debug_polygons_local = np.unique(
+        all_debug_vtx, return_inverse=True)
+    debug_vtx_coords = np.column_stack(
+        [xVertex[local_debug_vtx], yVertex[local_debug_vtx]])
+    debug_vtx_labels = np.array(
+        [row_idx_to_tri_idx.get(row_idx, -1) for row_idx in local_debug_vtx],
+        dtype=np.int32)
+
+    debug_polygons = []
+    offset = 0
+    for ids in debug_poly_vtx_ids:
+        n = len(ids)
+        debug_polygons.append(debug_polygons_local[offset:offset + n])
+        offset += n
+
+    writeLabeledPolygonsToVtk(
+        debug_vtx_coords, debug_polygons, debug_vtx_labels,
+        'boundary_cell_polygons_debug.vtk')
+
+    synthetic_coords = []
+    synthetic_cell_pos = []
+    for row_idx in np.where(is_any_bdry_cell)[0]:
+        row = cellsOnVertexZB[row_idx]
+        real_cells = row[row >= 0]
+        if len(real_cells) == 3 and \
+                frozenset(real_cells) in preserved_tri_cellsets:
+            continue  # Simmetrix will produce this polygonal vertex itself
+        local_idx_triple = [
+            int(global_to_local[c]) if c in global_to_local else -1
+            for c in row
+        ]
+        synthetic_cell_pos.append(local_idx_triple)
+        synthetic_coords.append((xVertex[row_idx], yVertex[row_idx]))
+
+    bdry_poly_vtk = 'boundary_polygons.vtk'
+    writePolygonVerticesToVtk(
+        synthetic_coords, synthetic_cell_pos, bdry_poly_vtk)
 
     logger.info('Using Simmetrix generate2dModel to fit splines to the '
                 'domain boundary')
@@ -1271,25 +1456,44 @@ def fit_boundary_splines(self, dsMesh, section):
 
     args = [simmetrix_binary,
             '--contour', f'file={edge_vtk},order=0,units={units}',
-            '--contour', f'file={walked_vtk},order=1,units={units}',
+            '--contour', f'file={bdry_tri_vtk},order=1,units={units},'
+                         f'boundary-triangles,'
+                         f'boundary-polygons={bdry_poly_vtk}',
             output_prefix,
             str(coincident_tol), str(angle_tol), str(oncurve_angle_tol),
-            '0']  # createMesh = 0 (don't generate mesh)
+            '1']  # createMesh = 1 (generate mesh)
 
     check_call(args, logger=logger)
 
-    nCells = dsMesh.sizes['nCells']
-    bnd_class_dim = np.full(nCells, -1, dtype=np.int32)
-    bnd_class_id = np.zeros(nCells, dtype=np.int32)
-#   TODO The following should read the osbh file and a map from the input points to
-#   entries in the file, or something like that...
-#    with open('boundary_cells_classification.txt') as fh:
-#        for pt_idx, line in enumerate(fh):
-#            dim, eid = map(int, line.split())
-#            bnd_class_dim[cell_ids[pt_idx]] = dim
-#            bnd_class_id[cell_ids[pt_idx]] = eid
+    # generate2dModel writes a minimal MPAS mesh (boundary_contour.nc)
+    # with geomModelIdCell/geomModelDimCell/geomModelIdVertex/
+    # geomModelDimVertex classification arrays. Read those before
+    # MpasMeshConverter.x, which does not preserve unrecognized variables.
+    minimal_mesh_file = output_prefix + '.nc'
+    dsMinimal = xarray.open_dataset(minimal_mesh_file)
+    geom_id_cell = dsMinimal['geomModelIdCell'].values.copy()
+    geom_dim_cell = dsMinimal['geomModelDimCell'].values.copy()
+    geom_id_vertex = dsMinimal['geomModelIdVertex'].values.copy()
+    geom_dim_vertex = dsMinimal['geomModelDimVertex'].values.copy()
+    dsMinimal.close()
 
-    return bnd_class_dim, bnd_class_id
+    logger.info('Converting boundary-fitted triangular mesh to MPAS mesh')
+    converted_mesh_file = output_prefix + '_converted.nc'
+    args = ['MpasMeshConverter.x', minimal_mesh_file, converted_mesh_file]
+    check_call(args, logger=logger)
+
+    dsNewMesh = xarray.open_dataset(converted_mesh_file)
+    dsNewMesh.load()
+    dsNewMesh['geomModelIdCell'] = xarray.DataArray(
+        geom_id_cell, dims=['nCells'])
+    dsNewMesh['geomModelDimCell'] = xarray.DataArray(
+        geom_dim_cell, dims=['nCells'])
+    dsNewMesh['geomModelIdVertex'] = xarray.DataArray(
+        geom_id_vertex, dims=['nVertices'])
+    dsNewMesh['geomModelDimVertex'] = xarray.DataArray(
+        geom_dim_vertex, dims=['nVertices'])
+
+    return dsNewMesh
 
 
 def build_mali_mesh(self, cell_width, x1, y1, geom_points,
@@ -1596,11 +1800,18 @@ def build_mali_mesh(self, cell_width, x1, y1, geom_points,
 
     logger.info('sorting mesh')
     dsMesh = sort_mesh(dsMesh)
-    write_netcdf(dsMesh, 'dehorned.nc')
+    write_netcdf(dsMesh, 'dehorned_sorted.nc')
 
     if mesh_generator == 'simmetrix':
-        bnd_class_dim, bnd_class_id = fit_boundary_splines(
-            self, dsMesh, section)
+        # Fit splines to the dehorned mesh's boundary and generate the
+        # final mesh from the resulting geometric model; this mesh already
+        # has the correct (dehorned) domain shape, so it replaces dsMesh
+        # and needs no further culling.
+        dsMesh = fit_boundary_splines(self, dsMesh, section)
+        logger.info('sorting boundary-fitted mesh')
+        dsMesh = sort_mesh(dsMesh)
+
+    write_netcdf(dsMesh, 'dehorned.nc')
 
     args = ['create_landice_grid_from_generic_mpas_grid', '-i',
             'dehorned.nc', '-o',
@@ -1615,12 +1826,16 @@ def build_mali_mesh(self, cell_width, x1, y1, geom_points,
     check_call(args, logger=logger)
 
     if mesh_generator == 'simmetrix':
+        # create_landice_grid_from_generic_mpas_grid only copies a fixed
+        # allowlist of variables, so re-attach the geometric model
+        # classification from dehorned.nc onto the final mesh.
+        dsDehorned = xarray.open_dataset('dehorned.nc')
         dsMeshFinal = xarray.open_dataset(mesh_name)
-        dsMeshFinal['boundaryClassDim'] = xarray.DataArray(
-            bnd_class_dim, dims=['nCells'])
-        dsMeshFinal['boundaryClassId'] = xarray.DataArray(
-            bnd_class_id, dims=['nCells'])
+        for var in ('geomModelIdCell', 'geomModelDimCell',
+                    'geomModelIdVertex', 'geomModelDimVertex'):
+            dsMeshFinal[var] = dsDehorned[var]
         write_netcdf(dsMeshFinal, mesh_name)
+        dsDehorned.close()
         dsMeshFinal.close()
 
     logger.info('Marking domain boundaries dirichlet')
