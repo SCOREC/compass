@@ -2,6 +2,7 @@ import os
 import re
 import sys
 import time
+from collections import deque
 from shutil import copyfile
 
 import json
@@ -592,97 +593,6 @@ def writeTrianglesToVtk(points, triangles, filename, boundary_order,
         f.writelines(lines)
 
 
-def writePolygonVerticesToVtk(points, cell_positions, filename):
-    """Writes explicit polygonal-vertex entries needed to close boundary
-    cells' polygons, for ``generate2dModel`` to append to its output
-    mesh's ``cellsOnVertex``.
-
-    Each entry is a polygonal vertex (MPAS ``xVertex``/``yVertex``/
-    ``cellsOnVertex`` triangle-circumcenter point) that Simmetrix's mesh
-    will not itself reproduce -- e.g. one with a missing (boundary) cell,
-    or one whose 3 owning cells don't form one of the preserved boundary
-    triangles. Owning cells are given as ``local_cells`` indices (matching
-    the point order of the corresponding triangles VTK file written by
-    :py:func:`writeTrianglesToVtk`) rather than coordinates, since
-    coordinate matching is not reliable once points have round-tripped
-    through Simmetrix's unit conversions. This is the same "all_vertices"
-    index space ``generate2dModel`` already tags every boundary-triangle
-    -mesh vertex with, so it covers any real cell referenced by a
-    polygonal vertex, not just cells on the boundary loop itself.
-    ``MpasMeshConverter.x`` reconstructs each cell's full polygon
-    (``verticesOnCell``, etc.) purely from ``cellsOnVertex``, so no
-    per-cell vertex ordering needs to be supplied here.
-
-    Parameters
-    ----------
-    points : array-like, shape (N, 2)
-        xy coordinates of each polygonal vertex entry.
-    cell_positions : array-like of int, shape (N, 3)
-        For each entry, the ``local_cells`` index of each of its (up to 3)
-        owning cells, or -1 where a cell is missing (boundary edge).
-    filename : str
-        Output file path.
-    """
-    n = len(points)
-    lines = ['# vtk DataFile Version 3.0\n',
-             f'{filename} written by compass/landice/mesh.py\n',
-             'ASCII\n',
-             'DATASET POLYDATA\n\n',
-             f'POINTS {n} float\n']
-
-    for pt in points:
-        lines.append(f'{pt[0]} {pt[1]} 0.0\n')
-    lines.append(f'\nPOINT_DATA {n}\n')
-    lines.append('SCALARS boundaryCellLocalIndices int 3\n')
-    lines.append('LOOKUP_TABLE default\n')
-    for triple in cell_positions:
-        lines.append(f'{triple[0]} {triple[1]} {triple[2]}\n')
-    with open(filename, "w") as f:
-        f.writelines(lines)
-
-
-def writeLabeledPolygonsToVtk(points, polygons, point_labels, filename):
-    """Writes a VTK polygon mesh with a per-point integer label, for
-    debugging boundary cell polygon closure.
-
-    Parameters
-    ----------
-    points : array-like, shape (N, 2)
-        xy coordinates of all polygon-vertex points.
-    polygons : list of array-like of int
-        One entry per boundary cell, giving the local point indices of
-        that cell's polygon corners in order.
-    point_labels : array-like of int, shape (N,)
-        Per-point label: -1 if the point has no associated triangle in
-        ``boundary_cells.vtk``, otherwise the index of that triangle
-        (row index into ``bdry_tri``/``tri_local``).
-    filename : str
-        Output file path.
-    """
-    n = len(points)
-    total_index_count = sum(len(poly) for poly in polygons)
-    lines = ['# vtk DataFile Version 3.0\n',
-             f'{filename} written by compass/landice/mesh.py\n',
-             'ASCII\n',
-             'DATASET POLYDATA\n\n',
-             f'POINTS {n} float\n']
-
-    for pt in points:
-        lines.append(f'{pt[0]} {pt[1]} 0.0\n')
-    lines.append(f'\nPOLYGONS {len(polygons)} '
-                 f'{total_index_count + len(polygons)}\n')
-    for poly in polygons:
-        idxs = ' '.join(str(i) for i in poly)
-        lines.append(f'{len(poly)} {idxs}\n')
-    lines.append(f'\nPOINT_DATA {n}\n')
-    lines.append('SCALARS triangleIndex int 1\n')
-    lines.append('LOOKUP_TABLE default\n')
-    for label in point_labels:
-        lines.append(f'{label}\n')
-    with open(filename, "w") as f:
-        f.writelines(lines)
-
-
 def remove_triangles(contour, name, debug=False):
     """ find sequences of four points where the first
     and last point are the same and remove the second
@@ -1180,17 +1090,25 @@ def build_cell_width(self, section_name, gridded_dataset,
             distToEdge)
 
 
-def get_ordered_boundary_cells(dsMesh):
-    """
-    Walk boundary edges to return a closed, ordered sequence of 0-based
-    cell indices, i.e. ``nCells`` indices. In MPAS's dual-mesh layout,
-    ``xCell``/``yCell`` are the actual primal (triangular) mesh vertex
-    (corner) points -- ``xVertex``/``yVertex`` are the triangle
-    circumcenters (dual/Voronoi vertices) -- so this traces the boundary
-    of the surviving primal mesh in terms of its true corner points.
+# Per-triangle tags used by the seam partition below: a triangle is
+# either preserved verbatim from the input MPAS mesh or generated by
+# Simmetrix. ``producer`` is also the VTK scalar name written for these,
+# so the tags can be inspected per triangle in ParaView.
+PRODUCER_PRESERVED = 1
+PRODUCER_SIMMETRIX = 2
 
-    Corner cells (those with two boundary edges) appear once; the first
-    index is repeated at the end to close the loop.
+
+def boundary_edge_loops(dsMesh):
+    """
+    Walk the mesh's boundary edges into closed loops.
+
+    Walking *edges* rather than cells is deliberate. A boundary cell does
+    not necessarily own exactly two boundary edges: on the GIS dehorned
+    mesh 418 cells own three and 27 own four, while 796 own just one. Any
+    walk that steps cell-to-cell assuming a degree of two mis-traverses at
+    those cells. Every boundary *edge*, by contrast, has exactly two
+    neighbours -- one through each endpoint -- so the boundary edge graph
+    is a disjoint union of simple cycles and the walk is unambiguous.
 
     Parameters
     ----------
@@ -1199,67 +1117,563 @@ def get_ordered_boundary_cells(dsMesh):
 
     Returns
     -------
-    ordered : numpy.ndarray
-        0-based cell indices of length N+1 where N is the number of
-        unique boundary cells and ``ordered[0] == ordered[-1]``.
+    loops : list of numpy.ndarray
+        One array of 0-based boundary-edge indices per closed loop. A
+        domain with interior voids yields more than one loop.
     """
-    cellsOnEdge = dsMesh['cellsOnEdge'].values      # (nEdges, 2), 1-based
-    verticesOnEdge = dsMesh['verticesOnEdge'].values  # (nEdges, 2), 1-based
+    cellsOnEdge = dsMesh['cellsOnEdge'].values
+    verticesOnEdge = dsMesh['verticesOnEdge'].values
 
-    # Boundary edges: one cell slot is the null cell (index 0 in 1-based)
-    is_bnd = np.any(cellsOnEdge == 0, axis=1)
-    bnd_e = np.where(is_bnd)[0]
+    bnd = np.where(np.any(cellsOnEdge == 0, axis=1))[0]
+    if len(bnd) == 0:
+        return []
 
-    c0 = cellsOnEdge[bnd_e, 0]
-    c1 = cellsOnEdge[bnd_e, 1]
-    owner = np.where(c0 == 0, c1, c0) - 1  # 0-based owner cell
-    v0 = verticesOnEdge[bnd_e, 0] - 1      # 0-based dual-vertex indices,
-    v1 = verticesOnEdge[bnd_e, 1] - 1      # used only for the edge walk
+    # dual vertex -> incident boundary edges
+    vtx_edges = {}
+    for e in bnd:
+        for v in verticesOnEdge[e]:
+            vtx_edges.setdefault(int(v), []).append(int(e))
 
-    # Build adjacency from boundary dual-vertices (used only to identify
-    # which boundary edges are connected) to boundary edges.
-    vtx_to_edges = {}
-    for i in range(len(bnd_e)):
-        for v in (v0[i], v1[i]):
-            vtx_to_edges.setdefault(v, []).append(i)
-
-    # Walk the closed boundary edge chain, recording owner cells.
-    visited = np.zeros(len(bnd_e), dtype=bool)
-    ordered = []
-    curr = 0
-    entry_vtx = -1
-    while True:
-        visited[curr] = True
-        ordered.append(owner[curr])
-        exit_vtx = v1[curr] if v0[curr] == entry_vtx else v0[curr]
-        moved = False
-        for nxt in vtx_to_edges[exit_vtx]:
-            if not visited[nxt]:
-                entry_vtx = exit_vtx
-                curr = nxt
-                moved = True
+    loops = []
+    unvisited = set(int(e) for e in bnd)
+    while unvisited:
+        start = min(unvisited)
+        loop = [start]
+        unvisited.discard(start)
+        # arbitrarily pick one endpoint as the direction of travel
+        prev_vtx = int(verticesOnEdge[start][0])
+        curr = start
+        while True:
+            a, b = (int(v) for v in verticesOnEdge[curr])
+            next_vtx = b if a == prev_vtx else a
+            nxt = [e for e in vtx_edges[next_vtx]
+                   if e != curr and e in unvisited]
+            if not nxt:
                 break
-        if not moved:
-            break
+            curr = nxt[0]
+            unvisited.discard(curr)
+            loop.append(curr)
+            prev_vtx = next_vtx
+        loops.append(np.array(loop, dtype=np.int64))
+    return loops
 
-    # Corner cells own two adjacent boundary edges and appear twice
-    # consecutively; keep only the first occurrence.
-    deduped = [ordered[0]]
-    for c in ordered[1:]:
-        if c != deduped[-1]:
-            deduped.append(c)
-    deduped.append(deduped[0])  # close the loop
-    return np.array(deduped)
+
+def get_ordered_boundary_cells(dsMesh):
+    """
+    Ordered boundary cells, as one open sequence per boundary loop.
+
+    In MPAS's dual-mesh layout, ``xCell``/``yCell`` are the actual primal
+    (triangular) mesh vertex (corner) points -- ``xVertex``/``yVertex``
+    are the triangle circumcenters (dual/Voronoi vertices) -- so this
+    traces the boundary of the surviving primal mesh in terms of its true
+    corner points.
+
+    Each loop is the sequence of owner cells along its boundary edge walk
+    with consecutive duplicates collapsed, left *open* (the first cell is
+    not repeated at the end). A cell owning several non-adjacent boundary
+    edges legally appears more than once in a loop -- at a pinch point the
+    boundary really does pass through the cell twice -- so callers must not
+    assume the entries are unique.
+
+    Parameters
+    ----------
+    dsMesh : xarray.Dataset
+        MPAS mesh dataset containing ``cellsOnEdge`` and ``verticesOnEdge``.
+
+    Returns
+    -------
+    loops : list of numpy.ndarray
+        0-based cell indices, one array per boundary loop.
+    """
+    cellsOnEdge = dsMesh['cellsOnEdge'].values
+    loops = []
+    for edge_loop in boundary_edge_loops(dsMesh):
+        c0 = cellsOnEdge[edge_loop, 0]
+        c1 = cellsOnEdge[edge_loop, 1]
+        owner = np.where(c0 == 0, c1, c0) - 1
+
+        collapsed = [int(owner[0])]
+        for c in owner[1:]:
+            if int(c) != collapsed[-1]:
+                collapsed.append(int(c))
+        # the walk wraps, so drop a trailing repeat of the first cell
+        while len(collapsed) > 1 and collapsed[-1] == collapsed[0]:
+            collapsed.pop()
+        loops.append(np.array(collapsed, dtype=np.int64))
+    return loops
+
+
+def get_cell_adjacency(dsMesh):
+    """
+    Per-cell neighbour lists (0-based) from ``cellsOnCell``/``nEdgesOnCell``.
+
+    Parameters
+    ----------
+    dsMesh : xarray.Dataset
+        MPAS mesh dataset.
+
+    Returns
+    -------
+    adjacency : list of list of int
+        ``adjacency[i]`` are the 0-based indices of cell ``i``'s neighbours.
+    """
+    cellsOnCell = dsMesh['cellsOnCell'].values
+    nEdgesOnCell = dsMesh['nEdgesOnCell'].values
+    return [[int(c) - 1 for c in cellsOnCell[i, :nEdgesOnCell[i]] if c > 0]
+            for i in range(dsMesh.sizes['nCells'])]
+
+
+def get_boundary_distance(dsMesh, adjacency=None):
+    """
+    Ring distance of every cell from the domain boundary: 0 for a boundary
+    cell, 1 for its neighbours, and so on. Cells unreachable from the
+    boundary get -1 (does not occur on a connected mesh).
+
+    Parameters
+    ----------
+    dsMesh : xarray.Dataset
+        MPAS mesh dataset.
+
+    adjacency : list of list of int, optional
+        Precomputed neighbour lists from
+        :py:func:`get_cell_adjacency()`.
+
+    Returns
+    -------
+    dist : numpy.ndarray
+        Ring distance per cell, shape ``(nCells,)``.
+    """
+    nCells = dsMesh.sizes['nCells']
+    adj = adjacency if adjacency is not None else get_cell_adjacency(dsMesh)
+    cellsOnEdge = dsMesh['cellsOnEdge'].values
+
+    dist = np.full(nCells, -1, dtype=np.int64)
+    queue = deque()
+    for e in np.where(np.any(cellsOnEdge == 0, axis=1))[0]:
+        for c in cellsOnEdge[e]:
+            if c > 0 and dist[int(c) - 1] != 0:
+                dist[int(c) - 1] = 0
+                queue.append(int(c) - 1)
+    while queue:
+        c = queue.popleft()
+        for nb in adj[c]:
+            if dist[nb] < 0:
+                dist[nb] = dist[c] + 1
+                queue.append(nb)
+    return dist
+
+
+class SeamPartition:
+    """
+    The seam/interface/interior partition of an MPAS mesh, and the
+    per-triangle MPAS-preserved/Simmetrix classification it implies.
+
+    Each polygon is reconstructed by ``MpasMeshConverter.x`` purely from
+    the fan of incident triangles (``cellsOnVertex`` rows), and it closes
+    only if that fan is a complete cycle (interior polygon) or a complete
+    open fan terminated by two boundary edges (boundary polygon). So every
+    fan must come from a single source -- either wholly preserved from the
+    input MPAS mesh, or wholly generated by Simmetrix. Never mixed.
+
+    This partition guarantees that by construction. Cells are classified by
+    ring distance from the domain boundary:
+
+    * **seam** -- within ``k`` rings of the boundary. Kept verbatim and
+      handed to Simmetrix via ``MS_specifyFace``.
+    * **interior** -- everything else. Simmetrix remeshes this freely.
+    * **interface** -- the subset of seam cells having an interior
+      neighbour, i.e. the innermost ring of the seam annulus.
+
+    Only at an *interface* cell is a split fan legitimate: such a cell gets
+    preserved triangles outboard and Simmetrix triangles inboard, and that
+    is safe precisely because the two groups meet along the two interface
+    edges the cell owns, closing into a single cycle.
+
+    ``k=2`` is the operating point. At ``k=1`` every seam cell is also an
+    interface cell -- the annulus is one ring thick with no insulating
+    layer -- and MPAS-preserved and Simmetrix triangles interleave around
+    interface fans (458 offending cells on the GIS dehorned mesh).
+    ``k >= 2`` passes.
+
+    Attributes
+    ----------
+    k : int
+        Seam width in rings.
+
+    dist : numpy.ndarray
+        Ring distance of each cell from the boundary, shape ``(nCells,)``.
+
+    is_seam, is_interface, is_interior : numpy.ndarray of bool
+        Per-cell classification, shape ``(nCells,)``.
+
+    cells_on_vertex : numpy.ndarray
+        0-based ``cellsOnVertex``, with -1 for a null corner.
+
+    producer : numpy.ndarray
+        Per-triangle tag, shape ``(nVertices,)``: ``PRODUCER_PRESERVED``
+        (kept verbatim from the input MPAS mesh) if every real corner is a
+        seam cell, else ``PRODUCER_SIMMETRIX`` (generated by Simmetrix).
+    """
+
+    def __init__(self, dsMesh, k=2):
+        self.k = k
+        self.nCells = dsMesh.sizes['nCells']
+        self.nVertices = dsMesh.sizes['nVertices']
+
+        adj = get_cell_adjacency(dsMesh)
+        self.adjacency = adj
+        self.dist = get_boundary_distance(dsMesh, adj)
+
+        # kept for the interface-contiguity check
+        self._cell_xy = (dsMesh['xCell'].values, dsMesh['yCell'].values)
+        cellsOnEdge = dsMesh['cellsOnEdge'].values
+        self._boundary_cells = np.zeros(self.nCells, dtype=bool)
+        for e in np.where(np.any(cellsOnEdge == 0, axis=1))[0]:
+            for c in cellsOnEdge[e]:
+                if c > 0:
+                    self._boundary_cells[int(c) - 1] = True
+
+        self.is_seam = (self.dist >= 0) & (self.dist < k)
+        self.is_interior = ~self.is_seam
+
+        self.is_interface = np.zeros(self.nCells, dtype=bool)
+        for c in np.where(self.is_seam)[0]:
+            if any(self.is_interior[nb] for nb in adj[c]):
+                self.is_interface[c] = True
+
+        # A triangle is preserved iff all of its real corners are seam
+        # cells. Incomplete (null-corner) boundary rows qualify on their
+        # real corners alone -- they are how MPAS terminates a boundary fan
+        # and must travel with the preserved annulus.
+        cov = dsMesh['cellsOnVertex'].values - 1
+        self.cells_on_vertex = cov
+        self.producer = np.full(self.nVertices, PRODUCER_SIMMETRIX,
+                                dtype=np.int32)
+        for v in range(self.nVertices):
+            corners = [int(c) for c in cov[v] if c >= 0]
+            if corners and all(self.is_seam[c] for c in corners):
+                self.producer[v] = PRODUCER_PRESERVED
+
+    @property
+    def preserved_triangles(self):
+        """Triangle (``nVertices``) indices kept verbatim from the input."""
+        return np.where(self.producer == PRODUCER_PRESERVED)[0]
+
+    @property
+    def interior_triangles(self):
+        """Triangle (``nVertices``) indices Simmetrix generates."""
+        return np.where(self.producer == PRODUCER_SIMMETRIX)[0]
+
+    def counts(self):
+        """Summary counts, for logging."""
+        return {
+            'cells': int(self.nCells),
+            'seam': int(self.is_seam.sum()),
+            'interface': int(self.is_interface.sum()),
+            'interior': int(self.is_interior.sum()),
+            'triangles': int(self.nVertices),
+            'preserved': int(len(self.preserved_triangles)),
+            'generated': int(len(self.interior_triangles)),
+        }
+
+    def check_invariant(self):
+        """
+        Verify no incident-triangle fan is split between MPAS-preserved
+        and Simmetrix triangles, except at interface cells where a split
+        is expected by design.
+
+        Returns
+        -------
+        problems : list of str
+            Empty if the partition is sound.
+        """
+        problems = []
+        tris_of_cell = {}
+        for v in range(self.nVertices):
+            for c in self.cells_on_vertex[v]:
+                if c >= 0:
+                    tris_of_cell.setdefault(int(c), []).append(v)
+
+        for c in range(self.nCells):
+            tris = tris_of_cell.get(c, [])
+            if not tris:
+                problems.append(f'cell {c}: no incident triangles')
+                continue
+            tags = {int(self.producer[v]) for v in tris}
+            if len(tags) > 1 and not self.is_interface[c]:
+                kind = ('interior' if self.is_interior[c]
+                        else 'seam(non-interface)')
+                problems.append(f'cell {c} ({kind}): fan split between '
+                                'MPAS-preserved and Simmetrix triangles')
+
+        # Every interior cell's fan must be wholly Simmetrix-generated;
+        # otherwise the annulus does not actually separate the two.
+        for c in np.where(self.is_interior)[0]:
+            tris = tris_of_cell.get(c, [])
+            if any(self.producer[v] == PRODUCER_PRESERVED for v in tris):
+                problems.append(f'interior cell {c} has an MPAS-preserved '
+                                'triangle')
+
+        problems.extend(self._check_interface_contiguity(tris_of_cell))
+        return problems
+
+    def _check_interface_contiguity(self, tris_of_cell):
+        """
+        At an interface cell the fan is *expected* to be split, so the
+        agreement test above is vacuous there -- which is exactly where
+        the real defect lives. What must hold instead is that the two
+        groups form **contiguous arcs** that meet: walking the fan around
+        the cell, the MPAS-preserved triangles must be consecutive and the
+        Simmetrix triangles must be consecutive, giving exactly two
+        changes around the cycle (or zero, if one side is empty).
+
+        Three or more changes means the two interleave, so they cannot be
+        joined by a single pair of shared edges and the polygon will not
+        close -- the failure this whole design exists to prevent.
+
+        The fan is ordered here by angle about the cell centre, which is
+        well-defined for the star-shaped Voronoi neighbourhoods MPAS
+        produces.
+        """
+        problems = []
+        for c in np.where(self.is_interface)[0]:
+            tris = tris_of_cell.get(c, [])
+            if len(tris) < 3:
+                continue
+            tags = [int(self.producer[v]) for v in tris]
+            if len(set(tags)) < 2:
+                continue  # wholly one producer: nothing to interleave
+
+            order = np.argsort(self._fan_angles(c, tris))
+            ring = [tags[i] for i in order]
+            changes = sum(1 for i in range(len(ring))
+                          if ring[i] != ring[(i + 1) % len(ring)])
+            # a boundary cell's fan is an open arc, so it may show one
+            # fewer transition than a closed interior fan
+            limit = 3 if self._boundary_cells[c] else 2
+            if changes > limit:
+                problems.append(
+                    f'interface cell {c}: producers interleave around the '
+                    f'fan ({changes} transitions, expected <= {limit})')
+        return problems
+
+    def _fan_angles(self, cell, tris):
+        """Angle of each incident triangle's centroid about the cell centre."""
+        xc, yc = self._cell_xy
+        cov = self.cells_on_vertex
+        angles = []
+        for v in tris:
+            corners = [int(t) for t in cov[v] if t >= 0]
+            cx = float(np.mean(xc[corners]))
+            cy = float(np.mean(yc[corners]))
+            angles.append(np.arctan2(cy - yc[cell], cx - xc[cell]))
+        return np.array(angles)
+
+
+def get_boundary_order(dsMesh, nCells):
+    """
+    Per-cell 0-based boundary traversal position, -1 for non-boundary cells.
+
+    ``readVtkGeom`` (``modelGen2d.cc``) scatters the points of a
+    ``boundary-triangles`` contour into contour slots by this value, and
+    ``specifyBoundaryTriangleMesh`` exits if any slot is unfilled, so the
+    values must cover ``0..nBoundary-1`` exactly once.
+
+    Parameters
+    ----------
+    dsMesh : xarray.Dataset
+        MPAS mesh dataset.
+
+    nCells : int
+        Number of cells, i.e. the length of the returned array.
+
+    Returns
+    -------
+    order : numpy.ndarray
+        Boundary traversal position per cell, shape ``(nCells,)``.
+
+    Raises
+    ------
+    ValueError
+        If the boundary is not a single simple loop of distinct cells,
+        which is what the ``boundary-triangles`` VTK format can represent.
+        A cell has only one ``boundaryOrder`` slot, so a boundary that
+        passes through a cell twice (a pinch point) or splits into several
+        loops (an interior void) cannot be expressed.
+    """
+    loops = get_ordered_boundary_cells(dsMesh)
+    if len(loops) != 1:
+        raise ValueError(
+            f'boundary has {len(loops)} loops; the boundary-triangles VTK '
+            'format represents a single closed contour only')
+    loop = loops[0]
+    unique = np.unique(loop)
+    if len(unique) != len(loop):
+        raise ValueError(
+            f'boundary loop visits {len(loop) - len(unique)} cell(s) more '
+            'than once (pinch point); each cell has only one boundaryOrder '
+            'slot so this cannot be expressed in the VTK format')
+
+    order = np.full(nCells, -1, dtype=np.int64)
+    for pos, cell in enumerate(loop):
+        order[int(cell)] = pos
+    return order
+
+
+def stitch_simmetrix_output(dsMesh, partition, sim_file, out_file):
+    """
+    Combine ``generate2dModel``'s mesh with the input's boundary
+    terminator rows, writing a complete minimal MPAS mesh for
+    ``MpasMeshConverter.x``.
+
+    ``generate2dModel`` emits every triangle of its mesh, but it cannot
+    emit the incomplete (null-corner) ``cellsOnVertex`` rows: it meshes an
+    *area*, so every face it makes has three real corners. Those rows are
+    how MPAS terminates a boundary fan, and without them the boundary
+    polygons do not close. This function appends them.
+
+    Cell identity across the handoff is the *identity map*, and three
+    things have to hold for that to be true:
+
+    * ``specifyBoundaryTriangleMesh`` tags each specified mesh vertex with
+      its ``all_vertices`` index (``MS_specifyVertex(..., i)``,
+      ``simModelGen2d.cc``), which is the input cell index because
+      :py:func:`fit_boundary_splines()` writes every cell as a point;
+    * ``numberUnspecifiedVertices`` renumbers mesher-created vertices to
+      ``>= numAllVtx``, so the tags form one contiguous space;
+    * ``writeMeshSimToNetCDF`` writes *both* ``cellsOnVertex`` and
+      ``xCell``/``yCell`` indexed by ``EN_id`` (``netcdfWriter.cc``).
+
+    Underneath those, ``M_write`` renumbers every mesh entity by iteration
+    position, discarding the tags, so it must run *after* the netcdf is
+    written.
+
+    Parameters
+    ----------
+    dsMesh : xarray.Dataset
+        The input MPAS mesh the partition was built from.
+
+    partition : SeamPartition
+        Supplies the preserved-triangle set and ``cells_on_vertex``.
+
+    sim_file : str
+        ``generate2dModel``'s NetCDF output.
+
+    out_file : str
+        Minimal MPAS mesh to write, for ``MpasMeshConverter.x``.
+
+    Returns
+    -------
+    report : dict
+        Counts, plus ``preserved_missing`` (preserved triangles absent
+        from the Simmetrix output) and ``unmapped_cells``.
+    """
+    dsSim = xarray.open_dataset(sim_file)
+    dsSim.load()
+
+    x_sim = dsSim['xCell'].values
+    y_sim = dsSim['yCell'].values
+    cov_sim = dsSim['cellsOnVertex'].values  # 1-based, 0 = null
+
+    n_in = dsMesh.sizes['nCells']
+    n_sim = int(dsSim.sizes['nCells'])
+
+    # Cell identity is the identity map (see above). Any output cell at an
+    # index >= the input count is one the mesher added.
+    unmapped = [i for i in range(n_in) if i >= n_sim]
+
+    # Did the preserved triangles survive MS_specifyFace? Compare as
+    # corner sets, which the identity map makes directly comparable.
+    sim_tris = set()
+    for row in cov_sim:
+        corners = [int(c) - 1 for c in row if c > 0]
+        if len(corners) == 3:
+            sim_tris.add(frozenset(corners))
+
+    cov_in = partition.cells_on_vertex
+    preserved_missing = []
+    preserved_expected = 0
+    for v in partition.preserved_triangles:
+        corners = [int(c) for c in cov_in[v] if c >= 0]
+        if len(corners) != 3:
+            continue  # a terminator row, appended below rather than meshed
+        preserved_expected += 1
+        if frozenset(corners) not in sim_tris:
+            preserved_missing.append(int(v))
+
+    # Append the terminator rows. Coordinates need no conversion: the
+    # input is in metres and generate2dModel is told units=m, so it
+    # converts to its internal km on the way in and back on the way out.
+    extra_rows = []
+    extra_x = []
+    extra_y = []
+    xv_in = dsMesh['xVertex'].values
+    yv_in = dsMesh['yVertex'].values
+    for v in range(partition.nVertices):
+        row = cov_in[v]
+        if not (row < 0).any():
+            continue
+        extra_rows.append([0 if c < 0 else int(c) + 1 for c in row])
+        extra_x.append(float(xv_in[v]))
+        extra_y.append(float(yv_in[v]))
+
+    if extra_rows:
+        cov_out = np.concatenate(
+            [cov_sim, np.array(extra_rows, dtype=np.int32)])
+        xv_out = np.concatenate([dsSim['xVertex'].values, np.array(extra_x)])
+        yv_out = np.concatenate([dsSim['yVertex'].values, np.array(extra_y)])
+    else:
+        cov_out = cov_sim
+        xv_out = dsSim['xVertex'].values
+        yv_out = dsSim['yVertex'].values
+
+    dsOut = xarray.Dataset()
+    dsOut['xCell'] = xarray.DataArray(x_sim, dims=['nCells'])
+    dsOut['yCell'] = xarray.DataArray(y_sim, dims=['nCells'])
+    dsOut['zCell'] = xarray.DataArray(np.zeros_like(x_sim), dims=['nCells'])
+    dsOut['xVertex'] = xarray.DataArray(xv_out, dims=['nVertices'])
+    dsOut['yVertex'] = xarray.DataArray(yv_out, dims=['nVertices'])
+    dsOut['zVertex'] = xarray.DataArray(
+        np.zeros_like(xv_out), dims=['nVertices'])
+    dsOut['cellsOnVertex'] = xarray.DataArray(
+        cov_out.astype(np.int32), dims=['nVertices', 'vertexDegree'])
+    dsOut['meshDensity'] = xarray.DataArray(
+        np.ones(len(x_sim)), dims=['nCells'])
+    dsOut.attrs['on_a_sphere'] = 'NO'
+    dsOut.attrs['sphere_radius'] = 0.0
+    dsOut.to_netcdf(out_file)
+
+    report = {
+        'sim_cells': n_sim,
+        'sim_triangles': int(dsSim.sizes['nVertices']),
+        'appended': len(extra_rows),
+        'preserved_expected': preserved_expected,
+        'preserved_found': preserved_expected - len(preserved_missing),
+        'preserved_missing': preserved_missing,
+        'unmapped_cells': unmapped,
+    }
+    dsSim.close()
+    return report
 
 
 def fit_boundary_splines(self, dsMesh, section):
     """
     Fit splines to the domain boundary contour of ``dsMesh`` and generate
-    the final MALI mesh from the resulting geometric model. The new mesh
-    is built by Simmetrix's ``generate2dModel`` from the original
-    ice-margin contour (inner) and the boundary-adjacent triangles of
-    ``dsMesh`` (outer), so it already has the correct (dehorned/culled)
-    domain shape and requires no further culling.
+    the final MALI mesh from the resulting geometric model. The mesh is
+    built by Simmetrix's ``generate2dModel`` from the original ice-margin
+    contour (inner, which carries the interior geometric model entities)
+    and the preserved seam annulus of ``dsMesh`` (outer), so it already
+    has the correct (dehorned/culled) domain shape and requires no
+    further culling.
+
+    The handoff is structured around an explicit *seam*: a band of cells
+    hugging the domain boundary is kept verbatim from ``dsMesh`` and
+    handed to Simmetrix via ``MS_specifyFace``, which holds it fixed,
+    while Simmetrix remeshes the interior freely. See
+    :py:class:`SeamPartition` for why the band is needed -- in short, a
+    cell's Voronoi polygon is reconstructed by ``MpasMeshConverter.x``
+    purely from the fan of triangles incident to that cell, so splitting
+    one cell's fan between the two producers leaves its polygon unclosed.
 
     In MPAS's dual-mesh layout, ``xCell``/``yCell`` (``nCells``) are the
     primal (triangular) mesh corner points, and a triangle
@@ -1273,11 +1687,13 @@ def fit_boundary_splines(self, dsMesh, section):
         Provides ``logger`` and ``config``.
 
     dsMesh : xarray.Dataset
-        MPAS mesh dataset used only as the source of the domain boundary
-        shape (its own connectivity is not part of the output).
+        MPAS mesh dataset supplying the domain boundary shape and the
+        preserved seam annulus.
 
     section : configparser section
-        Config section used to read the Simmetrix parameters.
+        Config section used to read the Simmetrix parameters, including
+        ``simmetrix_seam_width`` (the seam width ``k`` in cell rings,
+        default 2).
 
     Returns
     -------
@@ -1291,141 +1707,67 @@ def fit_boundary_splines(self, dsMesh, section):
 
     xCell = dsMesh['xCell'].values
     yCell = dsMesh['yCell'].values
-    bdry_cells_closed = get_ordered_boundary_cells(dsMesh)
-    cell_ids = bdry_cells_closed[:-1]  # 0-based cell ID per boundary point
+    nCells = dsMesh.sizes['nCells']
 
-    # triangle vertices (xCell/yCell) surrounding a polygonal vertex
-    cellsOnVertex = dsMesh['cellsOnVertex'].values
-    # mask for incomplete polygonal vertices (bounding fewer than 3
-    # triangle vertices, i.e. at the domain boundary)
-    incomplete_tri = np.any(cellsOnVertex == 0, axis=1)
-    cellsOnVertexZB = cellsOnVertex - 1  # 0-based index
-    # mask for boundary-loop triangle vertices
-    is_bdry_cell = np.isin(cellsOnVertexZB, cell_ids)
-    # mask for any polygonal vertex (complete triangle or incomplete) with
-    # any triangle vertex on the boundary loop
-    is_any_bdry_cell = np.any(is_bdry_cell, axis=1)
-    # mask for complete triangles with any triangle vertex on the boundary
-    bdry_tri_mask = is_any_bdry_cell & ~incomplete_tri
-    bdry_tri = cellsOnVertexZB[bdry_tri_mask]
+    # Partition the mesh into a preserved seam annulus hugging the domain
+    # boundary and an interior region for Simmetrix to remesh. See
+    # SeamPartition for why every cell's triangle fan must have a single
+    # producer, and why k=2 is the operating point.
+    seam_width = section.getint('simmetrix_seam_width', 2)
+    partition = SeamPartition(dsMesh, k=seam_width)
+    counts = partition.counts()
+    logger.info(f'Seam partition (k={seam_width}): '
+                f'{counts["seam"]} seam cells '
+                f'({counts["interface"]} interface), '
+                f'{counts["interior"]} interior cells; '
+                f'{counts["preserved"]} preserved triangles, '
+                f'{counts["generated"]} to be generated by Simmetrix')
 
-    # Remap to a compact local point set containing every triangle vertex
-    # referenced by any boundary-adjacent polygonal vertex, whether from a
-    # complete (preserved) triangle or an incomplete row -- so
-    # global_to_local can resolve any real triangle vertex a synthetic
-    # entry might need to reference, not just ones that also happen to be
-    # a preserved triangle's corner.
-    bdry_adjacent_tri_verts = cellsOnVertexZB[is_any_bdry_cell]
-    real_tri_verts = bdry_adjacent_tri_verts[bdry_adjacent_tri_verts >= 0]
-    local_cells = np.unique(real_tri_verts)
-    global_to_local = {gid: local_index
-                       for local_index, gid in enumerate(local_cells)}
-    tri_local = np.array(
-        [[global_to_local[c] for c in tri] for tri in bdry_tri],
-        dtype=np.int64).reshape(bdry_tri.shape) if len(bdry_tri) else \
-        np.zeros((0, 3), dtype=np.int64)
-    tri_vtx_coords = np.column_stack([xCell[local_cells], yCell[local_cells]])
-
-    # store the triangle vtx (polygonal cell) order (0-based) along the contour
-    # mark interior verts as -1
-    boundary_order = np.full(len(local_cells), -1, dtype=np.int32)
-    n_excluded = 0
-    for bdry_order, gid in enumerate(cell_ids):
-        local_index = global_to_local.get(gid)
-        if local_index is not None:
-            boundary_order[local_index] = bdry_order
-        else:
-            n_excluded += 1
-    if n_excluded > 0:
+    problems = partition.check_invariant()
+    if problems:
+        preview = '\n  '.join(problems[:10])
         raise RuntimeError(
-            f'{n_excluded} of {len(cell_ids)} boundary cells do not '
-            'bound any triangle and were excluded from boundary_cells.vtk; '
-            'this indicates a dangling boundary cell with no incident '
-            'triangle in the mesh.')
+            f'The seam partition at k={seam_width} violates the '
+            f'single-producer invariant at {len(problems)} location(s); '
+            'the resulting mesh would have unclosed cell polygons. First '
+            f'few:\n  {preview}\n'
+            'Increasing simmetrix_seam_width may resolve this.')
+
+    # Write the boundary-triangles VTK that generate2dModel consumes
+    # (readVtkGeom, modelGen2d.cc):
+    #   POINTS     one per cell, in cell-index order -- this is the
+    #              `all_vertices` index space MS_specifyVertex tags each
+    #              mesh vertex with (EN_id), and the space
+    #              writeMeshSimToNetCDF maps back to output cell indices.
+    #              Passing *every* cell, rather than a compacted subset,
+    #              is what makes cell identity across the handoff the
+    #              identity map.
+    #   POLYGONS   the preserved triangles, as triples of point indices
+    #   POINT_DATA boundaryOrder, the 0-based boundary traversal position
+    boundary_order = get_boundary_order(dsMesh, nCells)
+
+    # Preserved triangles only. Incomplete (null-corner) rows carry no
+    # triangle to specify -- they are boundary *terminators*, and are
+    # re-appended after meshing rather than handed to Simmetrix.
+    cellsOnVertexZB = partition.cells_on_vertex
+    preserved_tri = []
+    for v in partition.preserved_triangles:
+        corners = [int(c) for c in cellsOnVertexZB[v] if c >= 0]
+        if len(corners) == 3:
+            preserved_tri.append(corners)
+    preserved_tri = np.array(preserved_tri, dtype=np.int64).reshape(-1, 3)
+
+    if preserved_tri.size and (preserved_tri.min() < 0 or
+                               preserved_tri.max() >= nCells):
+        raise RuntimeError(
+            'a preserved triangle references an out-of-range cell')
 
     bdry_tri_vtk = 'boundary_cells.vtk'
-    writeTrianglesToVtk(tri_vtx_coords, tri_local, bdry_tri_vtk, boundary_order)
-
-    # Simmetrix's mesher only ever produces the preserved boundary
-    # triangles (bdry_tri) plus its own new interior triangles, so a
-    # dsMesh polygonal vertex (cellsOnVertex row) is only reproduced in
-    # the output mesh if it is exactly one of the preserved triangles.
-    # Any other boundary-adjacent polygonal vertex -- one with a missing
-    # (0) cell, or a complete cell triple that doesn't match a preserved
-    # triangle -- has no corresponding triangle in the output and would
-    # leave its cells' polygons unclosed. Write those out explicitly so
-    # generate2dModel can add them to the output mesh's cellsOnVertex.
-    #
-    # Coordinates are not used to identify these polygonal vertices in
-    # generate2dModel (floating point/unit round-tripping through
-    # Simmetrix makes coordinate matching unreliable); instead each
-    # synthetic entry's owning cells are given as local_cells indices
-    # (matching boundary_cells.vtk's POINTS order), the same "all_vertices"
-    # index space generate2dModel already tags every boundary-triangle-mesh
-    # vertex with. local_cells was built above from every triangle vertex
-    # referenced by any boundary-adjacent polygonal vertex (complete or
-    # incomplete), so every real triangle vertex a synthetic entry might
-    # need to reference resolves correctly here.
-    preserved_tri_cellsets = set(frozenset(t) for t in bdry_tri)
-
-    # Debug output: for each boundary cell, its full polygon (from
-    # dsMesh's own verticesOnCell), with each polygon vertex labeled by
-    # the row index into bdry_tri/tri_local of the triangle already
-    # written to boundary_cells.vtk that produces it, or -1 if no such
-    # triangle exists (i.e. this polygon vertex still needs to be
-    # completed by a synthetic entry).
-    row_idx_to_tri_idx = {}
-    for tri_idx, row_idx in enumerate(np.where(bdry_tri_mask)[0]):
-        row_idx_to_tri_idx[row_idx] = tri_idx
-
-    xVertex = dsMesh['xVertex'].values
-    yVertex = dsMesh['yVertex'].values
-    verticesOnCell = dsMesh['verticesOnCell'].values
-    nEdgesOnCell = dsMesh['nEdgesOnCell'].values
-
-    debug_poly_vtx_ids = []
-    for gid in cell_ids:
-        n = nEdgesOnCell[gid]
-        debug_poly_vtx_ids.append(verticesOnCell[gid, :n] - 1)  # 0-based
-
-    all_debug_vtx = np.concatenate(debug_poly_vtx_ids)
-    local_debug_vtx, debug_polygons_local = np.unique(
-        all_debug_vtx, return_inverse=True)
-    debug_vtx_coords = np.column_stack(
-        [xVertex[local_debug_vtx], yVertex[local_debug_vtx]])
-    debug_vtx_labels = np.array(
-        [row_idx_to_tri_idx.get(row_idx, -1) for row_idx in local_debug_vtx],
-        dtype=np.int32)
-
-    debug_polygons = []
-    offset = 0
-    for ids in debug_poly_vtx_ids:
-        n = len(ids)
-        debug_polygons.append(debug_polygons_local[offset:offset + n])
-        offset += n
-
-    writeLabeledPolygonsToVtk(
-        debug_vtx_coords, debug_polygons, debug_vtx_labels,
-        'boundary_cell_polygons_debug.vtk')
-
-    synthetic_coords = []
-    synthetic_cell_pos = []
-    for row_idx in np.where(is_any_bdry_cell)[0]:
-        row = cellsOnVertexZB[row_idx]
-        real_cells = row[row >= 0]
-        if len(real_cells) == 3 and \
-                frozenset(real_cells) in preserved_tri_cellsets:
-            continue  # Simmetrix will produce this polygonal vertex itself
-        local_idx_triple = [
-            int(global_to_local[c]) if c in global_to_local else -1
-            for c in row
-        ]
-        synthetic_cell_pos.append(local_idx_triple)
-        synthetic_coords.append((xVertex[row_idx], yVertex[row_idx]))
-
-    bdry_poly_vtk = 'boundary_polygons.vtk'
-    writePolygonVerticesToVtk(
-        synthetic_coords, synthetic_cell_pos, bdry_poly_vtk)
+    writeTrianglesToVtk(np.column_stack([xCell, yCell]), preserved_tri,
+                        bdry_tri_vtk, boundary_order)
+    logger.info(f'Wrote {bdry_tri_vtk}: {nCells} points, '
+                f'{len(preserved_tri)} preserved triangles, '
+                f'{int((boundary_order >= 0).sum())} boundary contour points')
 
     logger.info('Using Simmetrix generate2dModel to fit splines to the '
                 'domain boundary')
@@ -1443,9 +1785,8 @@ def fit_boundary_splines(self, dsMesh, section):
     simmetrix_binary = section.get('simmetrix_binary',
                                    'generate2dModel')
 
-    # Original ice-margin contour used for the meshing call (inner), and
-    # the boundary-adjacent triangle mesh of the current dehorned mesh,
-    # with ordered boundary vertices marked (outer).
+    # The original ice-margin contour (inner) and the preserved seam
+    # annulus of the dehorned mesh (outer).
     edge_vtk = 'edge.vtk'
     output_prefix = 'boundary_contour'
 
@@ -1454,11 +1795,28 @@ def fit_boundary_splines(self, dsMesh, section):
             f'Input file {edge_vtk} not found. Ensure '
             'build_cell_width() was called first to create this file.')
 
+    # Both contours are required. generate2dModel maps order=0 to
+    # features.inner and order=1 to features.outer, and runs createEdges
+    # on each, so the inner (ice-margin) contour is where the interior
+    # geometric model entities -- its splines, point and boundary
+    # classification -- are defined. It also selects the two-loop form of
+    # createFaces (simModelGen2d.cc), giving a face bounded by the outer
+    # contour and the margin. Passing only the triangles would take the
+    # hasSingleContour path and discard that inner model entirely.
+    #
+    # The boundary triangles must be the *outer* contour: features.outer
+    # is what createMesh meshes and what writeMeshSimToNetCDF indexes by
+    # EN_id, so the seam annulus has to travel in that slot.
+    #
+    # fail-if-cleaned: every point in the triangles contour is a cell
+    # centre the partition depends on, and the triangle corner indices
+    # reference those point positions. If cleaning drops a point, those
+    # indices no longer mean what was written, so a silent removal would
+    # corrupt the handoff rather than merely perturb it. Better to stop.
     args = [simmetrix_binary,
             '--contour', f'file={edge_vtk},order=0,units={units}',
             '--contour', f'file={bdry_tri_vtk},order=1,units={units},'
-                         f'boundary-triangles,'
-                         f'boundary-polygons={bdry_poly_vtk}',
+                         f'boundary-triangles,fail-if-cleaned',
             output_prefix,
             str(coincident_tol), str(angle_tol), str(oncurve_angle_tol),
             '1']  # createMesh = 1 (generate mesh)
@@ -1477,13 +1835,51 @@ def fit_boundary_splines(self, dsMesh, section):
     geom_dim_vertex = dsMinimal['geomModelDimVertex'].values.copy()
     dsMinimal.close()
 
+    # Re-attach the incomplete (null-corner) boundary rows, which
+    # Simmetrix cannot produce, and verify the preserved triangles
+    # survived MS_specifyFace.
+    stitched_mesh_file = output_prefix + '_stitched.nc'
+    report = stitch_simmetrix_output(dsMesh, partition, minimal_mesh_file,
+                                     stitched_mesh_file)
+    logger.info(f'Simmetrix produced {report["sim_cells"]} cells and '
+                f'{report["sim_triangles"]} triangles; '
+                f'{report["preserved_found"]}/'
+                f'{report["preserved_expected"]} preserved triangles '
+                f'survived, {report["appended"]} boundary terminator rows '
+                'appended')
+    if report['preserved_missing']:
+        raise RuntimeError(
+            f'{len(report["preserved_missing"])} preserved triangle(s) are '
+            'absent from the Simmetrix output, so the seam annulus was not '
+            'held fixed; the affected cells\' polygons will not close')
+    if report['unmapped_cells']:
+        raise RuntimeError(
+            f'{len(report["unmapped_cells"])} input cell(s) have no '
+            'Simmetrix counterpart, so the EN_id index space shared by the '
+            'two sides of the handoff was not preserved')
+
     logger.info('Converting boundary-fitted triangular mesh to MPAS mesh')
     converted_mesh_file = output_prefix + '_converted.nc'
-    args = ['MpasMeshConverter.x', minimal_mesh_file, converted_mesh_file]
+    args = ['MpasMeshConverter.x', stitched_mesh_file, converted_mesh_file]
     check_call(args, logger=logger)
 
     dsNewMesh = xarray.open_dataset(converted_mesh_file)
     dsNewMesh.load()
+
+    # Stitching appends the boundary terminator rows, so the per-triangle
+    # classification arrays generate2dModel wrote are short by that many
+    # entries. Those appended rows came from the input mesh rather than
+    # from the geometric model, so they have no classification; pad with
+    # -1 to keep the arrays dimensioned on nVertices.
+    n_appended = report['appended']
+    if n_appended > 0:
+        geom_id_vertex = np.concatenate(
+            [geom_id_vertex, np.full(n_appended, -1,
+                                     dtype=geom_id_vertex.dtype)])
+        geom_dim_vertex = np.concatenate(
+            [geom_dim_vertex, np.full(n_appended, -1,
+                                      dtype=geom_dim_vertex.dtype)])
+
     dsNewMesh['geomModelIdCell'] = xarray.DataArray(
         geom_id_cell, dims=['nCells'])
     dsNewMesh['geomModelDimCell'] = xarray.DataArray(
