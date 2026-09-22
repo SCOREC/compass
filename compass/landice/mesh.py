@@ -1520,7 +1520,8 @@ def get_boundary_order(dsMesh, nCells):
     return order
 
 
-def stitch_simmetrix_output(dsMesh, partition, sim_file, out_file):
+def stitch_simmetrix_output(dsMesh, partition, sim_file, out_file,
+                            seam_cells):
     """
     Combine ``generate2dModel``'s mesh with the input's boundary
     terminator rows, writing a complete minimal MPAS mesh for
@@ -1532,17 +1533,23 @@ def stitch_simmetrix_output(dsMesh, partition, sim_file, out_file):
     how MPAS terminates a boundary fan, and without them the boundary
     polygons do not close. This function appends them.
 
-    Cell identity across the handoff is the *identity map*, and three
-    things have to hold for that to be true:
+    Only the seam cells are handed to Simmetrix, so an input cell index is
+    *not* an output cell index. The mapping between them rests on three
+    things:
 
     * ``specifyBoundaryTriangleMesh`` tags each specified mesh vertex with
       its ``all_vertices`` index (``MS_specifyVertex(..., i)``,
-      ``simModelGen2d.cc``), which is the input cell index because
-      :py:func:`fit_boundary_splines()` writes every cell as a point;
+      ``simModelGen2d.cc``), which is the seam cell's position in the
+      point list :py:func:`fit_boundary_splines()` wrote;
     * ``numberUnspecifiedVertices`` renumbers mesher-created vertices to
-      ``>= numAllVtx``, so the tags form one contiguous space;
+      ``>= numAllVtx``, so a specified vertex keeps its position and
+      everything Simmetrix added lands above the seam;
     * ``writeMeshSimToNetCDF`` writes *both* ``cellsOnVertex`` and
       ``xCell``/``yCell`` indexed by ``EN_id`` (``netcdfWriter.cc``).
+
+    Together those make output cell ``i`` the same point as seam cell
+    ``i`` for ``i < len(seam_cells)``, which is the map ``seam_cells``
+    inverts below.
 
     Underneath those, ``M_write`` renumbers every mesh entity by iteration
     position, discarding the tags, so it must run *after* the netcdf is
@@ -1562,6 +1569,11 @@ def stitch_simmetrix_output(dsMesh, partition, sim_file, out_file):
     out_file : str
         Minimal MPAS mesh to write, for ``MpasMeshConverter.x``.
 
+    seam_cells : numpy.ndarray
+        The 0-based input cell indices written as points, in the order
+        they were written, i.e. the inverse of the local index space the
+        preserved triangles reference.
+
     Returns
     -------
     report : dict
@@ -1575,15 +1587,22 @@ def stitch_simmetrix_output(dsMesh, partition, sim_file, out_file):
     y_sim = dsSim['yCell'].values
     cov_sim = dsSim['cellsOnVertex'].values  # 1-based, 0 = null
 
-    n_in = dsMesh.sizes['nCells']
     n_sim = int(dsSim.sizes['nCells'])
+    n_seam = len(seam_cells)
 
-    # Cell identity is the identity map (see above). Any output cell at an
-    # index >= the input count is one the mesher added.
-    unmapped = [i for i in range(n_in) if i >= n_sim]
+    # Input cell -> output cell. A seam cell keeps its position in the
+    # point list; every other input cell has no counterpart, since
+    # Simmetrix meshed that region afresh.
+    mapping = np.full(dsMesh.sizes['nCells'], -1, dtype=np.int64)
+    mapping[seam_cells] = np.arange(n_seam)
+
+    # A specified vertex the mesher dropped would leave its seam cell
+    # without an output counterpart, which breaks the preserved triangles
+    # that reference it.
+    unmapped = [int(c) for i, c in enumerate(seam_cells) if i >= n_sim]
 
     # Did the preserved triangles survive MS_specifyFace? Compare as
-    # corner sets, which the identity map makes directly comparable.
+    # corner sets in the *output* index space.
     sim_tris = set()
     for row in cov_sim:
         corners = [int(c) - 1 for c in row if c > 0]
@@ -1598,7 +1617,8 @@ def stitch_simmetrix_output(dsMesh, partition, sim_file, out_file):
         if len(corners) != 3:
             continue  # a terminator row, appended below rather than meshed
         preserved_expected += 1
-        if frozenset(corners) not in sim_tris:
+        mapped = [int(mapping[c]) for c in corners]
+        if any(m < 0 for m in mapped) or frozenset(mapped) not in sim_tris:
             preserved_missing.append(int(v))
 
     # Append the terminator rows. Coordinates need no conversion: the
@@ -1613,7 +1633,11 @@ def stitch_simmetrix_output(dsMesh, partition, sim_file, out_file):
         row = cov_in[v]
         if not (row < 0).any():
             continue
-        extra_rows.append([0 if c < 0 else int(c) + 1 for c in row])
+        out_row = []
+        for c in row:
+            m = -1 if c < 0 else int(mapping[int(c)])
+            out_row.append(0 if m < 0 else m + 1)  # 0 = null, MPAS is 1-based
+        extra_rows.append(out_row)
         extra_x.append(float(xv_in[v]))
         extra_y.append(float(yv_in[v]))
 
@@ -1735,16 +1759,22 @@ def fit_boundary_splines(self, dsMesh, section):
 
     # Write the boundary-triangles VTK that generate2dModel consumes
     # (readVtkGeom, modelGen2d.cc):
-    #   POINTS     one per cell, in cell-index order -- this is the
-    #              `all_vertices` index space MS_specifyVertex tags each
-    #              mesh vertex with (EN_id), and the space
-    #              writeMeshSimToNetCDF maps back to output cell indices.
-    #              Passing *every* cell, rather than a compacted subset,
-    #              is what makes cell identity across the handoff the
-    #              identity map.
+    #   POINTS     one per *seam* cell -- this is the `all_vertices` index
+    #              space MS_specifyVertex tags each mesh vertex with
+    #              (EN_id), and the space writeMeshSimToNetCDF maps back
+    #              to output cell indices.
     #   POLYGONS   the preserved triangles, as triples of point indices
     #   POINT_DATA boundaryOrder, the 0-based boundary traversal position
-    boundary_order = get_boundary_order(dsMesh, nCells)
+    #
+    # Only seam cells may appear: specifyBoundaryTriangleMesh specifies
+    # every point in the file as a mesh vertex, and a vertex in the region
+    # Simmetrix meshes that no specified face or contour connects is an
+    # isolated point, which SurfaceMesher_execute rejects.
+    seam_cells = np.where(partition.is_seam)[0]
+    global_to_local = np.full(nCells, -1, dtype=np.int64)
+    global_to_local[seam_cells] = np.arange(len(seam_cells))
+
+    boundary_order = get_boundary_order(dsMesh, nCells)[seam_cells]
 
     # Preserved triangles only. Incomplete (null-corner) rows carry no
     # triangle to specify -- they are boundary *terminators*, and are
@@ -1754,18 +1784,21 @@ def fit_boundary_splines(self, dsMesh, section):
     for v in partition.preserved_triangles:
         corners = [int(c) for c in cellsOnVertexZB[v] if c >= 0]
         if len(corners) == 3:
-            preserved_tri.append(corners)
+            preserved_tri.append([int(global_to_local[c]) for c in corners])
     preserved_tri = np.array(preserved_tri, dtype=np.int64).reshape(-1, 3)
 
-    if preserved_tri.size and (preserved_tri.min() < 0 or
-                               preserved_tri.max() >= nCells):
+    # Every corner of a preserved triangle is a seam cell by construction
+    # (that is what PRODUCER_PRESERVED means), so all of them must have
+    # resolved to a local index.
+    if preserved_tri.size and preserved_tri.min() < 0:
         raise RuntimeError(
-            'a preserved triangle references an out-of-range cell')
+            'a preserved triangle references a cell outside the seam')
 
     bdry_tri_vtk = 'boundary_cells.vtk'
-    writeTrianglesToVtk(np.column_stack([xCell, yCell]), preserved_tri,
-                        bdry_tri_vtk, boundary_order)
-    logger.info(f'Wrote {bdry_tri_vtk}: {nCells} points, '
+    writeTrianglesToVtk(
+        np.column_stack([xCell[seam_cells], yCell[seam_cells]]),
+        preserved_tri, bdry_tri_vtk, boundary_order)
+    logger.info(f'Wrote {bdry_tri_vtk}: {len(seam_cells)} seam-cell points, '
                 f'{len(preserved_tri)} preserved triangles, '
                 f'{int((boundary_order >= 0).sum())} boundary contour points')
 
@@ -1840,7 +1873,7 @@ def fit_boundary_splines(self, dsMesh, section):
     # survived MS_specifyFace.
     stitched_mesh_file = output_prefix + '_stitched.nc'
     report = stitch_simmetrix_output(dsMesh, partition, minimal_mesh_file,
-                                     stitched_mesh_file)
+                                     stitched_mesh_file, seam_cells)
     logger.info(f'Simmetrix produced {report["sim_cells"]} cells and '
                 f'{report["sim_triangles"]} triangles; '
                 f'{report["preserved_found"]}/'
@@ -1854,7 +1887,7 @@ def fit_boundary_splines(self, dsMesh, section):
             'held fixed; the affected cells\' polygons will not close')
     if report['unmapped_cells']:
         raise RuntimeError(
-            f'{len(report["unmapped_cells"])} input cell(s) have no '
+            f'{len(report["unmapped_cells"])} seam cell(s) have no '
             'Simmetrix counterpart, so the EN_id index space shared by the '
             'two sides of the handoff was not preserved')
 
