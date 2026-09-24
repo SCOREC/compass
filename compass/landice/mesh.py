@@ -1522,7 +1522,7 @@ def get_boundary_order(dsMesh, nCells):
 
 def stitch_simmetrix_output(dsMesh, partition, sim_file, out_file,
                             seam_cells):
-    """
+    r"""
     Combine ``generate2dModel``'s mesh with the input's boundary
     terminator rows, writing a complete minimal MPAS mesh for
     ``MpasMeshConverter.x``.
@@ -1532,6 +1532,42 @@ def stitch_simmetrix_output(dsMesh, partition, sim_file, out_file,
     *area*, so every face it makes has three real corners. Those rows are
     how MPAS terminates a boundary fan, and without them the boundary
     polygons do not close. This function appends them.
+
+    In the primal mesh below, every point is a cell and every triangle is
+    a ``cellsOnVertex`` row. ``A``, ``B`` and ``C`` are boundary cells;
+    nothing is meshed above them::
+
+            A ─────────── B ─────────── C
+             \           / \           /
+              \   T1    /   \   T2    /       T1 = (A, B, D)
+               \       /     \       /        T2 = (B, C, D)
+                \     /       \     /
+                 \   /         \   /
+                  \ /           \ /
+                   D ─────────── D'
+
+    ``B``'s fan is ``T1`` and ``T2``, which meet along ``B``-``D``. Past
+    ``T1`` there is nothing beyond ``A``-``B``, and past ``T2`` nothing
+    beyond ``B``-``C``: those two are *boundary edges*, MPAS edges whose
+    ``cellsOnEdge`` has one null slot because only the inward side has a
+    real cell. The fan is an open arc, so ``B``'s polygon has no way to
+    close.
+
+    MPAS terminates it with one extra ``cellsOnVertex`` row per boundary
+    edge, naming that edge's two real cells and a null third corner::
+
+            R1 = (A, B, null)     for boundary edge A-B
+            R2 = (B, C, null)     for boundary edge B-C
+
+    Each stands in for the triangle that would exist if the mesh continued
+    outward. The null corner is what tells ``MpasMeshConverter.x`` the fan
+    terminates rather than wraps.
+
+    Appending a row grows ``nVertices``, so ``cellsOnVertex`` and the
+    vertex coordinates ``xVertex``/``yVertex``/``zVertex`` all grow
+    together; ``nCells`` is untouched. Every such row is preserved-tagged
+    by construction, since its real corners are boundary cells and so are
+    seam cells for any ``k >= 1``.
 
     Only the seam cells are handed to Simmetrix, so an input cell index is
     *not* an output cell index. The mapping between them rests on three
